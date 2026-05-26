@@ -3,9 +3,13 @@ import sys
 import subprocess
 import ctypes
 import urllib.request
+import urllib.error
 import zipfile
 import shutil
 import json
+import sqlite3
+import shutil
+import tempfile
 from datetime import datetime
 
 # ── Admin check ───────────────────────────────────────────────────────────────
@@ -39,6 +43,9 @@ def info(msg):
 def warn(msg):
     print(f"  \033[93m[!]\033[0m {msg}")
 
+def red(msg):
+    print(f"  \033[91m[!!]\033[0m {msg}")
+
 def run(cmd):
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -57,7 +64,9 @@ LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
 TEMP         = os.environ.get("TEMP", "")
 USERPROFILE  = os.environ.get("USERPROFILE", "")
 MINECRAFT    = os.path.join(APPDATA, ".minecraft")
-DOWNLOADS    = os.path.join(USERPROFILE, "AppData", "Local", "SSHelper")
+PROGRAMDATA  = os.environ.get("PROGRAMDATA", "C:\\ProgramData")
+DOWNLOADS    = os.path.join(LOCALAPPDATA, "ChichoSSHelper")
+
 OCEAN_API_BASE = "https://anticheat.ac/api/pins"
 
 CHEAT_CLIENTS = [
@@ -65,47 +74,19 @@ CHEAT_CLIENTS = [
     "Ares", "Future", "Vape", "Astolfo", "Drip", "Salhack", "Entropy",
     "Inertia", "Raven", "Novoline", "Wolfram", "PyroHax", "Rekt",
     "Remix", "XRay", "Horion", "Phi", "Hybrid", "Rusher", "cyemer",
-    "Prestige", "velaris",
-    # Extended
-    "Reflex", "Atomic", "Dimension", "Vertex", "Flux", "Tenacity",
-    "Crypt", "Praxis", "Hexed", "Emerald", "Autumn", "Serenity",
-    "XCarbon", "3arthh4ck", "Quantic", "Oringo", "ForgeHax",
-    "Omikron", "Zenith", "BleachHack", "GhostClient", "Skidware",
-    "killaura", "autoclick", "ScaffoldBot", "AntiAFK",
-    "Stealhack", "Kami", "Rusherhack", "Novoline", "ErisClient",
-    "Rise", "Moon", "SquadHack", "Zenia", "Polar", "Abyss",
+    "Prestige", "velaris", "bleach", "vapor", "dusk", "azura", "vertex",
+    "nexus", "rise", "lucid", "ketamine", "reflex", "exodus"
 ]
 
 SUSPICIOUS_PROCS = [
     "cheat", "hack", "inject", "ghost", "vape", "sigma",
     "future", "meteor", "wurst", "aristois", "payload", "rat",
-    "keylog", "prestige", "flux", "tenacity", "reflex", "crypt",
-    "anydesk", "teamviewer", "ammyy", "supremo", "ultraviewer",
-    "remotedesktop", "rustdesk", "dwservice", "connectwise",
-    "autoclick", "killaura", "scaffoldbot", "parsec",
+    "keylog", "prestige", "bleach", "vapor", "dusk"
 ]
 
 SUSPICIOUS_INJECTION_MODULES = [
     "inject", "hook", "cheat", "vape", "sigma",
-    "future", "meteor", "wurst", "aristois", "payload",
-]
-
-REMOTE_ACCESS_TOOLS = [
-    ("AnyDesk",        ["AnyDesk"],                       ["anydesk.exe"]),
-    ("TeamViewer",     ["TeamViewer"],                    ["TeamViewer.exe", "TeamViewer_Service.exe"]),
-    ("Ammyy Admin",    ["Ammyy"],                         ["AA_v3.exe"]),
-    ("Supremo",        ["Supremo"],                       ["Supremo.exe"]),
-    ("UltraViewer",    ["UltraViewer"],                   ["UltraViewer_Desktop.exe"]),
-    ("RustDesk",       ["RustDesk"],                      ["rustdesk.exe"]),
-    ("DWService",      ["dwagent", "DWAgent"],            ["dwagent.exe"]),
-    ("Parsec",         ["Parsec"],                        ["parsecd.exe"]),
-    ("NoMachine",      ["NoMachine"],                     ["nxd.exe"]),
-    ("ConnectWise",    ["ConnectWise", "ScreenConnect"],  ["ScreenConnect.ClientService.exe"]),
-    ("Splashtop",      ["Splashtop"],                     ["SRService.exe"]),
-    ("Chrome Remote",  ["Chrome Remote Desktop"],         ["remoting_host.exe"]),
-    ("Zoho Assist",    ["ZohoAssist"],                    ["ZohoMeeting.exe"]),
-    ("AeroAdmin",      ["AeroAdmin"],                     ["AeroAdmin.exe"]),
-    ("ISL Online",     ["ISL Online"],                    ["ISLLight.exe"]),
+    "future", "meteor", "wurst", "aristois", "payload"
 ]
 
 # ── Download helper ───────────────────────────────────────────────────────────
@@ -143,6 +124,7 @@ def download_and_open(url, filename):
                         bar = ("█" * (pct // 5)).ljust(20)
                         print(f"\r  [{bar}] {pct}%  ({downloaded // 1024} KB)", end="", flush=True)
         print()
+
     except Exception as e:
         print()
         warn(f"Download failed: {e}")
@@ -169,6 +151,7 @@ def download_and_open(url, filename):
             _open_file_or_folder(extract_dir)
         except Exception as e:
             warn(f"Extraction failed: {e}")
+            info("Opening ZIP directly...")
             os.startfile(dest)
     else:
         _open_file_or_folder(dest)
@@ -207,7 +190,7 @@ def check_appdata():
     info("Scanning for .dll files with suspicious names...")
     out = run(f'dir "{APPDATA}" /s /b *.dll 2>nul')
     for line in out.splitlines():
-        if any(s in line.lower() for s in ["inject", "hook", "cheat"]):
+        if any(s in line.lower() for s in ["inject","hook","cheat"]):
             warn(f"Suspicious DLL: {line}")
     pause()
 
@@ -242,6 +225,77 @@ def scan_java_injection():
     if not found_any:
         info("No suspicious injected modules found in Java processes.")
 
+
+def find_launcher_paths(name):
+    candidates = []
+    if name == "norisk":
+        candidates = [
+            os.path.join(LOCALAPPDATA, "norisk"),
+            os.path.join(APPDATA, "norisk"),
+        ]
+    elif name == "prism":
+        candidates = [
+            os.path.join(APPDATA, "PrismLauncher"),
+            os.path.join(APPDATA, "prismlauncher"),
+            os.path.join(APPDATA, "prism-launcher"),
+            os.path.join(APPDATA, "Prism Launcher"),
+            os.path.join(LOCALAPPDATA, "Programs", "Prism Launcher"),
+            os.path.join(LOCALAPPDATA, "PrismLauncher"),
+        ]
+    elif name == "lunar":
+        candidates = [
+            os.path.join(USERPROFILE, ".lunarclient", "offline", "multiver", "mods"),
+            os.path.join(USERPROFILE, ".lunarclient", "offline"),
+            os.path.join(USERPROFILE, ".lunarclient", "profiles"),
+            os.path.join(USERPROFILE, ".lunarclient"),
+            os.path.join(APPDATA, "LunarClient"),
+            os.path.join(LOCALAPPDATA, "Programs", "Lunar Client"),
+        ]
+    elif name == "feather":
+        candidates = [
+            os.path.join(APPDATA, "feather"),
+            os.path.join(APPDATA, "FeatherClient"),
+            os.path.join(LOCALAPPDATA, "Programs", "Feather"),
+        ]
+    elif name == "modrinth":
+        candidates = [
+            os.path.join(APPDATA, "ModrinthApp", "profiles"),
+            os.path.join(APPDATA, "ModrinthApp"),
+            os.path.join(APPDATA, "com.modrinth.theseus", "profiles"),
+            os.path.join(LOCALAPPDATA, "ModrinthApp", "profiles"),
+            os.path.join(LOCALAPPDATA, "ModrinthApp"),
+            os.path.join(LOCALAPPDATA, "com.modrinth.theseus"),
+            os.path.join(LOCALAPPDATA, "Programs", "Modrinth App"),
+        ]
+    elif name == "curseforge":
+        candidates = [
+            os.path.join(USERPROFILE, "curseforge", "minecraft", "Instances"),
+            os.path.join(APPDATA, "CurseForge"),
+            os.path.join(LOCALAPPDATA, "CurseForge"),
+            os.path.join(APPDATA, "Overwolf", "CurseForge"),
+        ]
+    elif name == "badlion":
+        candidates = [
+            os.path.join(APPDATA, "badlion client"),
+            os.path.join(APPDATA, "Badlion Client"),
+            os.path.join(LOCALAPPDATA, "Programs", "Badlion Client"),
+        ]
+    elif name == "tlauncher":
+        candidates = [
+            os.path.join(APPDATA, ".tlauncher"),
+            os.path.join(APPDATA, "TLauncher"),
+        ]
+    elif name == "multimc":
+        candidates = [
+            os.path.join(APPDATA, "MultiMC"),
+            os.path.join(LOCALAPPDATA, "Programs", "MultiMC"),
+        ]
+    elif name == ".minecraft":
+        candidates = [os.path.join(MINECRAFT, "mods")]
+
+    return [p for p in candidates if os.path.exists(p)]
+
+
 def check_minecraft():
     clear()
     header(".minecraft Folder Check")
@@ -261,41 +315,37 @@ def check_minecraft():
                 print("    Empty.")
         else:
             print("    Not found.")
+
+    info("launcher_profiles.json — version entries:")
+    lp = os.path.join(MINECRAFT, "launcher_profiles.json")
+    if os.path.exists(lp):
+        try:
+            with open(lp, "r", errors="ignore") as f:
+                data = json.load(f)
+            profiles = data.get("profiles", {})
+            for k, v in profiles.items():
+                vname = v.get("lastVersionId", "?")
+                name  = v.get("name", k)
+                jpath = v.get("javaDir", "default Java")
+                print(f"    [{name}]  version={vname}  java={jpath}")
+                # Flag if java path is not in Program Files
+                if jpath and "program files" not in jpath.lower() and jpath != "default Java":
+                    warn(f"Non-standard Java path in profile '{name}': {jpath}")
+        except Exception as e:
+            warn(f"Could not parse launcher_profiles.json: {e}")
+    else:
+        info("No launcher_profiles.json found.")
+
     info("Checking latest.log for suspicious keywords...")
     log = os.path.join(MINECRAFT, "logs", "latest.log")
     if os.path.exists(log):
         with open(log, "r", errors="ignore") as f:
             for line in f:
-                if any(k in line.lower() for k in ["cheat", "inject", "wurst", "sigma", "vape"]):
+                if any(k in line.lower() for k in ["cheat","inject","wurst","sigma","vape","hacked"]):
                     warn(f"Suspicious log entry: {line.strip()}")
     else:
         info("No latest.log found.")
     pause()
-
-
-def find_launcher_paths(name):
-    candidates = []
-    if name == "norisk":
-        candidates = [os.path.join(LOCALAPPDATA, "norisk"), os.path.join(APPDATA, "norisk")]
-    elif name == "prism":
-        candidates = [os.path.join(APPDATA, "prism-launcher"), os.path.join(APPDATA, "Prism Launcher"),
-                      os.path.join(LOCALAPPDATA, "Programs", "Prism Launcher")]
-    elif name == "lunar":
-        candidates = [os.path.join(USERPROFILE, ".lunarclient", "profiles"),
-                      os.path.join(USERPROFILE, ".lunarclient"), os.path.join(APPDATA, "LunarClient"),
-                      os.path.join(LOCALAPPDATA, "Programs", "Lunar Client")]
-    elif name == "feather":
-        candidates = [os.path.join(APPDATA, "feather"), os.path.join(APPDATA, "FeatherClient"),
-                      os.path.join(LOCALAPPDATA, "Programs", "Feather")]
-    elif name == "modrinth":
-        candidates = [os.path.join(APPDATA, "ModrinthApp", "profiles"), os.path.join(APPDATA, "ModrinthApp"),
-                      os.path.join(LOCALAPPDATA, "ModrinthApp"), os.path.join(LOCALAPPDATA, "Programs", "Modrinth")]
-    elif name == "curseforge":
-        candidates = [os.path.join(APPDATA, "CurseForge"), os.path.join(LOCALAPPDATA, "CurseForge"),
-                      os.path.join(APPDATA, "Overwolf", "CurseForge")]
-    elif name == ".minecraft":
-        candidates = [os.path.join(MINECRAFT, "mods")]
-    return [p for p in candidates if os.path.exists(p)]
 
 
 def scan_launcher_mods():
@@ -307,19 +357,29 @@ def scan_launcher_mods():
     print("  [4] feather")
     print("  [5] modrinth")
     print("  [6] curseforge")
-    print("  [7] .minecraft mods")
+    print("  [7] badlion")
+    print("  [8] tlauncher")
+    print("  [9] multimc")
+    print("  [10] .minecraft mods")
     print("  [0] Return to menu")
     print()
+
     choice = input("  Launcher choice: ").strip()
-    mapping = {"1": "norisk", "2": "prism", "3": "lunar", "4": "feather",
-               "5": "modrinth", "6": "curseforge", "7": ".minecraft"}
+    mapping = {
+        "1": "norisk", "2": "prism", "3": "lunar", "4": "feather",
+        "5": "modrinth", "6": "curseforge", "7": "badlion",
+        "8": "tlauncher", "9": "multimc", "10": ".minecraft",
+    }
+
     if choice == "0":
         return
+
     launcher = mapping.get(choice)
     if not launcher:
         warn("Invalid launcher selection.")
         pause()
         return
+
     candidates = find_launcher_paths(launcher)
     if not candidates:
         warn(f"No automatic path found for {launcher}.")
@@ -329,6 +389,7 @@ def scan_launcher_mods():
             pause()
             return
         candidates = [custom]
+
     selected_path = candidates[0]
     info(f"Scanning launcher path: {selected_path}")
     matches = []
@@ -340,9 +401,20 @@ def scan_launcher_mods():
                     break
         if len(matches) >= 250:
             break
-    lines = [f"Launcher scan: {launcher}", f"Path: {selected_path}",
-             f"Found {len(matches)} mod / metadata files", ""]
-    lines.extend(matches if matches else ["No mod or launcher metadata files found."])
+
+    lines = [
+        f"Launcher scan: {launcher}",
+        f"Path: {selected_path}",
+        f"Found {len(matches)} mod / metadata files",
+        "",
+    ]
+
+    if matches:
+        for m in matches:
+            lines.append(m)
+    else:
+        lines.append("No mod or launcher metadata files found in this path.")
+
     filename = f"launcher_mods_{launcher}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     dump_to_downloads(filename, "\n".join(lines))
 
@@ -350,7 +422,8 @@ def scan_launcher_mods():
 def check_minecraft_launchers():
     clear()
     header("Minecraft Launcher / Profile Scanner")
-    launchers = ["norisk", "prism", "lunar", "feather", "modrinth", "curseforge", ".minecraft"]
+    launchers = ["norisk", "prism", "lunar", "feather", "modrinth",
+                 "curseforge", "badlion", "tlauncher", "multimc", ".minecraft"]
     for launcher in launchers:
         candidates = find_launcher_paths(launcher)
         if not candidates:
@@ -374,9 +447,11 @@ def check_java_arguments():
         info("No java processes found.")
         pause()
         return
+
     suspicious = ["-javaagent", "inject", "mixin", "tweakclass", "forge", "fabric", "plugin", "agent"]
+    lines = out.splitlines()
     flagged = False
-    for line in out.splitlines():
+    for line in lines:
         text = line.strip()
         if not text:
             continue
@@ -385,6 +460,7 @@ def check_java_arguments():
             flagged = True
         else:
             print(f"  {text}")
+
     if not flagged:
         info("No suspicious Java command-line arguments detected.")
     pause()
@@ -394,7 +470,8 @@ def check_suspicious_folders():
     clear()
     header("Suspicious Cheat Folder Scanner")
     bases = [
-        APPDATA, LOCALAPPDATA,
+        APPDATA,
+        LOCALAPPDATA,
         os.path.join(USERPROFILE, "Downloads"),
         os.path.join(USERPROFILE, "Desktop"),
         os.environ.get("PROGRAMFILES", "C:\\Program Files"),
@@ -402,9 +479,10 @@ def check_suspicious_folders():
         os.path.join(USERPROFILE, ".minecraft"),
     ]
     extra_names = ["badlion", "impact", "salhack", "liquidbounce", "disabler",
-                   "meteor", "exploit", "payload", "reflex", "flux", "tenacity",
-                   "crypt", "praxis", "hexed", "rise", "moon", "zenith"]
+                   "meteor", "exploit", "payload", "bleach", "vapor", "dusk",
+                   "azura", "vertex", "nexus", "rise", "lucid"]
     all_names = sorted(set(CHEAT_CLIENTS + extra_names), key=str.lower)
+
     found_any = False
     for base in bases:
         if not base or not os.path.exists(base):
@@ -414,62 +492,455 @@ def check_suspicious_folders():
             if os.path.exists(path):
                 found(f"{path}")
                 found_any = True
+
     if not found_any:
         info("No suspicious cheat folders found in common locations.")
     pause()
 
 
+# ── Ocean API (fixed) ─────────────────────────────────────────────────────────
+
 def check_ocean_api():
     clear()
-    header("Ocean Anti-Cheat API Lookup")
-    pin = input("  Enter Ocean pin: ").strip()
+    header("Ocean Anti-Cheat — Scan Lookup")
+
+    print("  Tell the suspect to:")
+    print("  1. Go to  https://anticheat.ac")
+    print("  2. Download and run the Ocean scan tool")
+    print("  3. Send you the PIN it generates")
+    print()
+
+    pin = input("  Enter the suspect's Ocean PIN: ").strip()
     if not pin:
         warn("No pin entered.")
         pause()
         return
-    url = f"{OCEAN_API_BASE}/{pin}"
-    info(f"Querying Ocean API for pin {pin}...")
+
+    url = f"https://anticheat.ac/api/pins/{pin}"
+    info(f"Fetching results for pin {pin}...")
+
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
-            data = json.loads(raw)
+    except urllib.error.HTTPError as e:
+        warn(f"HTTP Error {e.code}: {e.reason} — is the PIN correct?")
+        pause()
+        return
     except Exception as e:
-        warn(f"Ocean API request failed: {e}")
+        warn(f"Request failed: {e}")
         pause()
         return
-    if not isinstance(data, dict) or "result" not in data:
-        warn("Ocean API returned invalid data.")
-        pause()
-        return
-    print()
-    print(f"  Game: {data.get('pin_type','N/A')}")
-    print(f"  Scan Time: {data.get('scantime','N/A')}")
-    print(f"  Pin: {data.get('pin','N/A')}")
-    print(f"  Country: {data.get('country','N/A')}")
-    print(f"  Sentence: {data.get('result','N/A')}")
 
-    def _print_list(field_name, label):
-        print(f"\n{label}:")
-        raw_value = data.get(field_name, "[]")
+    try:
+        data = json.loads(raw)
+    except Exception:
+        warn("Non-JSON response from Ocean API. Raw output:")
+        print(raw[:3000])
+        pause()
+        return
+
+    if not isinstance(data, dict):
+        warn("Unexpected response format.")
+        print(raw[:3000])
+        pause()
+        return
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    print()
+    game     = data.get("pin_type") or data.get("game", "N/A")
+    scantime = data.get("scantime") or data.get("scan_time", "N/A")
+    country  = data.get("country", "N/A")
+    sentence = data.get("result") or data.get("sentence") or data.get("verdict", "N/A")
+
+    if isinstance(sentence, str):
+        sl = sentence.lower()
+        if any(k in sl for k in ["cheat", "guilty", "detected", "ban"]):
+            sentence_display = f"\033[91m{sentence}\033[0m"
+        elif any(k in sl for k in ["warn", "suspicious"]):
+            sentence_display = f"\033[93m{sentence}\033[0m"
+        elif any(k in sl for k in ["clean", "not guilty", "clear"]):
+            sentence_display = f"\033[92m{sentence}\033[0m"
+        else:
+            sentence_display = sentence
+    else:
+        sentence_display = str(sentence)
+
+    print(f"  Game:      {game}")
+    print(f"  Scan Time: {scantime}")
+    print(f"  Pin:       {pin}")
+    print(f"  Country:   {country}")
+    print(f"  Verdict:   {sentence_display}")
+
+    def _print_list(field_names, label, colour=None):
+        raw_value = None
+        for name in field_names:
+            if name in data:
+                raw_value = data[name]
+                break
+        if raw_value is None:
+            return
+
         if isinstance(raw_value, str):
             try:
                 entries = json.loads(raw_value.replace("'", '"'))
-            except:
-                entries = [raw_value]
+            except Exception:
+                entries = [e.strip() for e in raw_value.split("\n") if e.strip()]
         else:
-            entries = raw_value
-        if not entries:
-            print("    None")
-            return
-        for item in entries:
-            print(f"    {item}")
+            entries = raw_value if isinstance(raw_value, list) else [str(raw_value)]
 
-    _print_list("detects", "Detections")
-    _print_list("warnings", "Warnings")
-    _print_list("suspicious", "Suspicious Files")
-    _print_list("execlist", "Exec List")
+        if not entries:
+            return
+
+        print(f"\n  {label}:")
+        for item in entries:
+            parts = str(item).split(":::")
+            main  = parts[0].strip()
+            extra = "  →  " + "  |  ".join(p.strip() for p in parts[1:] if p.strip()) if len(parts) > 1 else ""
+            if colour:
+                print(f"    {colour}{main}\033[0m{extra}")
+            else:
+                print(f"    {main}{extra}")
+
+    _print_list(["detects", "detections", "detect_list"],   "Detections",       "\033[91m")
+    _print_list(["warnings", "warns", "warning_list"],      "Warnings",         "\033[93m")
+    _print_list(["suspicious", "suspicious_files"],         "Suspicious Files",  "\033[93m")
+    _print_list(["execlist", "exec_list", "executed"],      "Exec List")
+
+    known = {
+        "pin_type","game","scantime","scan_time","country","result",
+        "sentence","verdict","pin","detects","detections","detect_list",
+        "warnings","warns","warning_list","suspicious","suspicious_files",
+        "execlist","exec_list","executed"
+    }
+    extras = {k: v for k, v in data.items() if k not in known and v}
+    if extras:
+        print("\n  Additional fields:")
+        for k, v in extras.items():
+            print(f"    {k}: {v}")
+
     pause()
+
+
+# ── Browser Forensics (new) ───────────────────────────────────────────────────
+
+BROWSER_PROFILES = {
+    "Chrome":  os.path.join(LOCALAPPDATA, r"Google\Chrome\User Data"),
+    "Edge":    os.path.join(LOCALAPPDATA, r"Microsoft\Edge\User Data"),
+    "Brave":   os.path.join(LOCALAPPDATA, r"BraveSoftware\Brave-Browser\User Data"),
+    "Opera":   os.path.join(APPDATA,      r"Opera Software\Opera Stable"),
+    "Vivaldi": os.path.join(LOCALAPPDATA, r"Vivaldi\User Data"),
+}
+
+FIREFOX_ROOT = os.path.join(APPDATA, r"Mozilla\Firefox\Profiles")
+
+
+def _chromium_db_copy(db_path):
+    """Copy a locked Chromium SQLite db to temp so we can read it."""
+    tmp = tempfile.mktemp(suffix=".db")
+    shutil.copy2(db_path, tmp)
+    return tmp
+
+
+def _chromium_profiles(browser_root):
+    """Return list of profile folders inside a Chromium user data dir."""
+    profiles = []
+    if not os.path.isdir(browser_root):
+        return profiles
+    for entry in os.listdir(browser_root):
+        full = os.path.join(browser_root, entry)
+        if os.path.isdir(full) and (entry == "Default" or entry.startswith("Profile")):
+            profiles.append(full)
+    return profiles
+
+
+def check_browser_history():
+    clear()
+    header("Browser History Viewer")
+    any_found = False
+
+    for browser, root in BROWSER_PROFILES.items():
+        profiles = _chromium_profiles(root)
+        if not profiles:
+            continue
+        info(f"{browser}:")
+        any_found = True
+        for profile in profiles:
+            hist_db = os.path.join(profile, "History")
+            if not os.path.exists(hist_db):
+                continue
+            try:
+                tmp = _chromium_db_copy(hist_db)
+                conn = sqlite3.connect(tmp)
+                cur  = conn.cursor()
+                cur.execute("""
+                    SELECT url, title, visit_count,
+                           datetime(last_visit_time/1000000-11644473600, 'unixepoch', 'localtime')
+                    FROM urls
+                    ORDER BY last_visit_time DESC
+                    LIMIT 50
+                """)
+                rows = cur.fetchall()
+                conn.close()
+                os.remove(tmp)
+                print(f"    Profile: {os.path.basename(profile)}  ({len(rows)} recent URLs shown)")
+                for url, title, visits, ts in rows:
+                    title = (title or "")[:60]
+                    print(f"      [{ts}] ({visits}x)  {title}")
+                    print(f"               {url[:100]}")
+            except Exception as e:
+                warn(f"    Could not read {browser} history ({os.path.basename(profile)}): {e}")
+
+    # Firefox
+    if os.path.isdir(FIREFOX_ROOT):
+        any_found = True
+        info("Firefox:")
+        for profile in os.listdir(FIREFOX_ROOT):
+            places = os.path.join(FIREFOX_ROOT, profile, "places.sqlite")
+            if not os.path.exists(places):
+                continue
+            try:
+                tmp = _chromium_db_copy(places)
+                conn = sqlite3.connect(tmp)
+                cur  = conn.cursor()
+                cur.execute("""
+                    SELECT p.url, p.title, p.visit_count,
+                           datetime(h.visit_date/1000000, 'unixepoch', 'localtime')
+                    FROM moz_places p
+                    JOIN moz_historyvisits h ON h.place_id = p.id
+                    ORDER BY h.visit_date DESC
+                    LIMIT 50
+                """)
+                rows = cur.fetchall()
+                conn.close()
+                os.remove(tmp)
+                print(f"    Profile: {profile}  ({len(rows)} recent URLs shown)")
+                for url, title, visits, ts in rows:
+                    title = (title or "")[:60]
+                    print(f"      [{ts}] ({visits}x)  {title}")
+                    print(f"               {url[:100]}")
+            except Exception as e:
+                warn(f"    Could not read Firefox history ({profile}): {e}")
+
+    if not any_found:
+        info("No browser profile folders found.")
+    pause()
+
+
+def check_browser_downloads():
+    clear()
+    header("Browser Downloads Viewer")
+    any_found = False
+
+    for browser, root in BROWSER_PROFILES.items():
+        profiles = _chromium_profiles(root)
+        if not profiles:
+            continue
+        info(f"{browser}:")
+        any_found = True
+        for profile in profiles:
+            hist_db = os.path.join(profile, "History")
+            if not os.path.exists(hist_db):
+                continue
+            try:
+                tmp = _chromium_db_copy(hist_db)
+                conn = sqlite3.connect(tmp)
+                cur  = conn.cursor()
+                cur.execute("""
+                    SELECT target_path, tab_url, total_bytes, received_bytes,
+                           datetime(start_time/1000000-11644473600, 'unixepoch', 'localtime'),
+                           state, danger_type
+                    FROM downloads
+                    ORDER BY start_time DESC
+                    LIMIT 100
+                """)
+                rows = cur.fetchall()
+                conn.close()
+                os.remove(tmp)
+                print(f"    Profile: {os.path.basename(profile)}  ({len(rows)} downloads)")
+                for target, tab_url, total, received, ts, state, danger in rows:
+                    fname    = os.path.basename(target or "?")
+                    size_kb  = (total or 0) // 1024
+                    still_on = os.path.exists(target or "")
+                    exists   = "\033[92m[ON DISK]\033[0m" if still_on else "\033[91m[DELETED]\033[0m"
+
+                    # Flag suspicious extensions
+                    ext = os.path.splitext(fname)[1].lower()
+                    flagged = ext in [".jar", ".exe", ".dll", ".bat", ".ps1", ".vbs", ".zip"]
+                    flag_str = " \033[93m<< SUSPICIOUS EXT\033[0m" if flagged else ""
+
+                    print(f"      [{ts}] {exists} {fname} ({size_kb} KB){flag_str}")
+                    print(f"               From: {(tab_url or '')[:100]}")
+                    if not still_on:
+                        print(f"               Path was: {target}")
+            except Exception as e:
+                warn(f"    Could not read {browser} downloads ({os.path.basename(profile)}): {e}")
+
+    if not any_found:
+        info("No browser profile folders found.")
+    pause()
+
+
+def check_browser_cache_cleared():
+    clear()
+    header("Browser Cache / History Wipe Detection")
+    print()
+    info("Checking for signs of deliberate browser data clearing...")
+    print()
+
+    suspicious_found = False
+
+    for browser, root in BROWSER_PROFILES.items():
+        profiles = _chromium_profiles(root)
+        if not profiles:
+            continue
+        for profile in profiles:
+            hist_db = os.path.join(profile, "History")
+            if not os.path.exists(hist_db):
+                # Profile folder exists but no History file — wiped
+                warn(f"{browser} [{os.path.basename(profile)}]: History file MISSING — likely wiped!")
+                suspicious_found = True
+                continue
+
+            # Check if history DB is suspiciously small or empty
+            size = os.path.getsize(hist_db)
+            if size < 40960:  # under 40 KB is almost certainly freshly cleared
+                warn(f"{browser} [{os.path.basename(profile)}]: History DB is very small ({size} bytes) — possibly cleared recently")
+                suspicious_found = True
+
+            # Check row count
+            try:
+                tmp  = _chromium_db_copy(hist_db)
+                conn = sqlite3.connect(tmp)
+                cur  = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM urls")
+                url_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM downloads")
+                dl_count = cur.fetchone()[0]
+                conn.close()
+                os.remove(tmp)
+                print(f"  {browser} [{os.path.basename(profile)}]:  {url_count} history entries,  {dl_count} download entries")
+                if url_count == 0:
+                    warn(f"  → Zero history entries — history was cleared!")
+                    suspicious_found = True
+                if dl_count == 0:
+                    warn(f"  → Zero download entries — downloads were cleared!")
+                    suspicious_found = True
+            except Exception as e:
+                warn(f"  Could not read {browser} DB: {e}")
+
+    # Check for CCleaner / BleachBit which are commonly used to wipe
+    info("\nChecking for known wipe tools...")
+    wipe_tools = ["CCleaner", "BleachBit", "Eraser", "PrivaZer", "Wise Disk Cleaner"]
+    for tool in wipe_tools:
+        for base in [APPDATA, LOCALAPPDATA,
+                     os.environ.get("PROGRAMFILES","C:\\Program Files"),
+                     os.environ.get("PROGRAMFILES(X86)","C:\\Program Files (x86)")]:
+            if os.path.exists(os.path.join(base, tool)):
+                warn(f"Wipe tool found: {tool} in {base}")
+                suspicious_found = True
+
+    # Check prefetch for wipe tools
+    pf_out = run("dir C:\\Windows\\Prefetch /b *.pf 2>nul").lower()
+    for tool in ["ccleaner", "bleachbit", "privazer", "eraser"]:
+        if tool in pf_out:
+            warn(f"Prefetch entry for wipe tool: {tool} — was recently run!")
+            suspicious_found = True
+
+    # Check event log for cleared history (Event ID 4663 file delete on history paths is complex,
+    # simpler: just check if Windows.old or shadow copies exist and were deleted)
+    info("\nChecking Windows Event Log for manual log clears (ID 1102)...")
+    ev = run('wevtutil qe Security /q:"*[System[EventID=1102]]" /f:text /c:5')
+    if ev.strip():
+        warn("Security event log was manually CLEARED recently:")
+        print(ev[:800])
+        suspicious_found = True
+    else:
+        info("No event log clear events found.")
+
+    print()
+    if not suspicious_found:
+        info("No obvious signs of browser data wiping detected.")
+    pause()
+
+
+def check_browser_cookies_search():
+    clear()
+    header("Browser Recently Visited Sites (Cookies)")
+    info("Reading cookie domains as evidence of visited sites...")
+    print()
+
+    for browser, root in BROWSER_PROFILES.items():
+        profiles = _chromium_profiles(root)
+        if not profiles:
+            continue
+        info(f"{browser}:")
+        for profile in profiles:
+            cookie_db = os.path.join(profile, "Network", "Cookies")
+            if not os.path.exists(cookie_db):
+                cookie_db = os.path.join(profile, "Cookies")
+            if not os.path.exists(cookie_db):
+                continue
+            try:
+                tmp  = _chromium_db_copy(cookie_db)
+                conn = sqlite3.connect(tmp)
+                cur  = conn.cursor()
+                cur.execute("""
+                    SELECT host_key,
+                           datetime(last_access_utc/1000000-11644473600, 'unixepoch', 'localtime')
+                    FROM cookies
+                    GROUP BY host_key
+                    ORDER BY MAX(last_access_utc) DESC
+                    LIMIT 60
+                """)
+                rows = cur.fetchall()
+                conn.close()
+                os.remove(tmp)
+                print(f"    Profile: {os.path.basename(profile)}  ({len(rows)} unique domains)")
+                for host, ts in rows:
+                    # Flag known cheat/crack sites
+                    flagged = any(k in host.lower() for k in [
+                        "crack", "cheat", "hack", "warez", "nulled", "skid",
+                        "vape", "sigma", "future", "meteor", "wurst", "ghost",
+                        "leaked", "free", "bypass", "inject"
+                    ])
+                    flag_str = "  \033[91m<< SUSPICIOUS DOMAIN\033[0m" if flagged else ""
+                    print(f"      [{ts}]  {host}{flag_str}")
+            except Exception as e:
+                warn(f"    Could not read {browser} cookies ({os.path.basename(profile)}): {e}")
+    pause()
+
+
+def menu_browser_forensics():
+    while True:
+        clear()
+        header("Browser Forensics")
+        print("  [1]  History Viewer            — last 50 visited URLs per browser")
+        print("  [2]  Downloads Viewer          — all downloads, flags deleted files")
+        print("  [3]  Cache / History Wipe Check — detect if they cleared their browser")
+        print("  [4]  Cookie Domain Viewer      — sites visited (even if history cleared)")
+        print("  [5]  Browser history paths     — open raw folder locations")
+        print("  [0]  Back to main menu")
+        print()
+        choice = input("  Choice: ").strip()
+        if choice == "0":
+            break
+        elif choice == "1":
+            check_browser_history()
+        elif choice == "2":
+            check_browser_downloads()
+        elif choice == "3":
+            check_browser_cache_cleared()
+        elif choice == "4":
+            check_browser_cookies_search()
+        elif choice == "5":
+            check_browser()
+        else:
+            warn("Invalid choice.")
+            input("  Press Enter to continue...")
+
+
+# ── Standard checks ───────────────────────────────────────────────────────────
 
 def check_startup():
     clear()
@@ -550,8 +1021,8 @@ def check_prefetch():
     clear()
     header("Windows Prefetch (Recently Run Programs)")
     out = run("dir C:\\Windows\\Prefetch /od /b *.pf")
-    keywords = ["java", "cheat", "inject", "hack", "wurst", "sigma", "vape", "rat",
-                "anydesk", "teamviewer", "reflex", "flux", "tenacity", "luyten", "recaf"]
+    keywords = ["java","cheat","inject","hack","wurst","sigma","vape","rat",
+                "bleach","vapor","dusk","ccleaner","bleachbit"]
     info("Flagged prefetch entries:")
     flagged = False
     for line in out.splitlines():
@@ -589,7 +1060,7 @@ def check_vpn():
     flagged = False
     for line in out.splitlines():
         if "description" in line.lower():
-            if any(k in line.lower() for k in ["virtual", "vpn", "tap", "tunnel", "hyper-v", "hamachi"]):
+            if any(k in line.lower() for k in ["virtual","vpn","tap","tunnel","hyper-v","hamachi"]):
                 found(line.strip())
                 flagged = True
     if not flagged:
@@ -624,560 +1095,110 @@ def check_drivers():
     print(run("driverquery"))
     pause()
 
-# ── NEW CHECKS ────────────────────────────────────────────────────────────────
-
-def check_remote_access():
-    clear()
-    header("Remote Access / Cheat-Assist Tool Detection")
-    all_procs = run("tasklist").lower()
-    found_any = False
-
-    for name, folders, procs in REMOTE_ACCESS_TOOLS:
-        folder_hit = any(
-            os.path.exists(os.path.join(base, f))
-            for f in folders
-            for base in [APPDATA, LOCALAPPDATA,
-                         os.environ.get("PROGRAMFILES", "C:\\Program Files"),
-                         os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")]
-        )
-        proc_hit = any(p.lower() in all_procs for p in procs)
-        if folder_hit or proc_hit:
-            status = []
-            if folder_hit: status.append("installed")
-            if proc_hit:   status.append("RUNNING")
-            found(f"{name}  →  {', '.join(status)}")
-            found_any = True
-        else:
-            info(f"{name}: not found")
-
-    pause()
-
-
-def check_bam():
-    clear()
-    header("BAM — Background Activity Monitor (Recently Executed Programs)")
-    info("BAM tracks recently run executables — survives deletion and reboots.")
-    bam_base = r"SYSTEM\CurrentControlSet\Services\bam\State\UserSettings"
-    out = run(f'reg query "HKLM\\{bam_base}" /s')
-    if not out:
-        warn("BAM key not found or access denied (requires admin).")
-        pause()
-        return
-
-    keywords = [
-        "cheat", "hack", "inject", "wurst", "sigma", "vape", "future",
-        "meteor", "aristois", "payload", "rat", "anydesk", "teamviewer",
-        "reflex", "flux", "killaura", "autoclick", "ghost", "prestige",
-        "luyten", "recaf", "jd-gui", "bytecode",
-    ]
-
-    info("Flagged BAM entries:")
-    flagged = False
-    for line in out.splitlines():
-        lower = line.lower()
-        if r"\device\harddiskvolume" in lower:
-            if any(k in lower for k in keywords):
-                found(line.strip())
-                flagged = True
-    if not flagged:
-        info("No suspicious BAM entries found.")
-
-    info("\nAll BAM executable entries:")
-    for line in out.splitlines():
-        if r"\device\harddiskvolume" in line.lower():
-            print(f"  {line.strip()}")
-    pause()
-
-
-def check_shellbags():
-    clear()
-    header("ShellBags — Explorer Folder History")
-    info("ShellBags record folders a user opened in Explorer — even renamed/deleted ones.")
-    info("Text-scanning registry for suspicious folder name clues...")
-
-    sb_keys = [
-        r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU",
-        r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags",
-        r"HKCU\Software\Microsoft\Windows\Shell\BagMRU",
-        r"HKCU\Software\Microsoft\Windows\Shell\Bags",
-    ]
-    keywords = [
-        "cheat", "hack", "inject", "wurst", "sigma", "vape", "future",
-        "meteor", "aristois", "payload", "rat", "reflex", "flux", "ghost",
-        "killaura", "autoclick", "luyten", "recaf",
-    ]
-    found_any = False
-    for key in sb_keys:
-        out = run(f'reg query "{key}" /s')
-        for line in out.splitlines():
-            if any(k in line.lower() for k in keywords):
-                found(line.strip())
-                found_any = True
-    if not found_any:
-        info("No suspicious folder names found in ShellBags (text pass).")
-    info("For full ShellBags analysis: use SBV in Manual Tools to launch ShellBagsView.")
-    pause()
-
-
-def check_muicache():
-    clear()
-    header("MUICache — Programs Run (by display name, survives uninstall)")
-    info("MUICache stores the display name of every EXE ever run on this account.")
-    key = r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"
-    out = run(f'reg query "{key}"')
-    keywords = [
-        "cheat", "hack", "inject", "wurst", "sigma", "vape", "future",
-        "meteor", "aristois", "payload", "rat", "anydesk", "teamviewer",
-        "reflex", "flux", "killaura", "autoclick", "ghost", "prestige",
-        "luyten", "recaf", "decompil", "jd-gui", "bytecode",
-    ]
-    info("Flagged MUICache entries:")
-    flagged = False
-    for line in out.splitlines():
-        if any(k in line.lower() for k in keywords):
-            found(line.strip())
-            flagged = True
-    if not flagged:
-        info("No suspicious MUICache entries.")
-    info("\nAll MUICache entries:")
-    print(out)
-    pause()
-
-
-def check_ps_history():
-    clear()
-    header("PowerShell Command History")
-    hist_path = os.path.join(APPDATA,
-        r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt")
-    if not os.path.exists(hist_path):
-        info("No PowerShell history file found.")
-        pause()
-        return
-    info(f"Reading: {hist_path}")
-    keywords = [
-        "cheat", "inject", "wurst", "sigma", "vape", "del ", "rd /", "rmdir",
-        "format", "clear-", "bypass", "download", "invoke-webrequest", "iwr ",
-        "curl ", "wget ", "base64", "anydesk", "teamviewer", "remove-item",
-    ]
-    with open(hist_path, "r", errors="ignore") as f:
-        lines = f.readlines()
-    info("Flagged commands:")
-    flagged = False
-    for line in lines:
-        if any(k in line.lower() for k in keywords):
-            found(line.strip())
-            flagged = True
-    if not flagged:
-        info("Nothing suspicious flagged.")
-    info("\nFull history:")
-    print("".join(lines))
-    pause()
-
-
-def check_clipboard():
-    clear()
-    header("Clipboard History Artifacts")
-    clip_base = os.path.join(LOCALAPPDATA, "Microsoft", "Windows", "Clipboard")
-    if os.path.exists(clip_base):
-        info(f"Clipboard folder found: {clip_base}")
-        for root, dirs, files in os.walk(clip_base):
-            for f in files:
-                full = os.path.join(root, f)
-                info(f"  {full}  ({os.path.getsize(full)} bytes)")
-        info("Opening clipboard folder in Explorer...")
-        subprocess.Popen(f'explorer "{clip_base}"')
-    else:
-        info("No Clipboard history folder found (feature may be disabled or cleared).")
-    pause()
-
-
-def check_decompilers():
-    clear()
-    header("JAR Decompiler / Bytecode Tool Detection")
-    info("These tools suggest the player may have been inspecting or modifying JAR files.")
-    decompilers = [
-        ("Luyten",          ["luyten", "Luyten"]),
-        ("Recaf",           ["recaf", "Recaf"]),
-        ("JD-GUI",          ["jd-gui", "JD-GUI"]),
-        ("Bytecode Viewer", ["BytecodeViewer", "bytecode-viewer"]),
-        ("CFR",             ["cfr"]),
-        ("Fernflower",      ["fernflower"]),
-        ("Vineflower",      ["vineflower"]),
-        ("jadx",            ["jadx"]),
-    ]
-    search_bases = [
-        APPDATA, LOCALAPPDATA,
-        os.path.join(USERPROFILE, "Downloads"),
-        os.path.join(USERPROFILE, "Desktop"),
-        os.path.join(USERPROFILE, "Documents"),
-        os.environ.get("PROGRAMFILES", "C:\\Program Files"),
-    ]
-    found_any = False
-    for name, folders in decompilers:
-        for f in folders:
-            for base in search_bases:
-                path = os.path.join(base, f)
-                if os.path.exists(path):
-                    found(f"{name}  →  {path}")
-                    found_any = True
-
-    info("Scanning AppData for decompiler JARs...")
-    decompiler_jar_keys = ["recaf", "jd-gui", "bytecodeviewer", "fernflower",
-                           "vineflower", "cfr", "jadx", "luyten"]
-    for base in [APPDATA, LOCALAPPDATA]:
-        jar_scan = run(f'dir "{base}" /s /b *.jar 2>nul')
-        for line in jar_scan.splitlines():
-            if any(k in line.lower() for k in decompiler_jar_keys):
-                found(f"Decompiler JAR: {line}")
-                found_any = True
-
-    if not found_any:
-        info("No decompiler tools detected.")
-    pause()
-
-
-def check_ghost_artifacts():
-    clear()
-    header("Ghost Client & Injection Artifact Scanner")
-    ghost_paths = [
-        os.path.join(APPDATA, ".vape"),
-        os.path.join(APPDATA, "Vape"),
-        os.path.join(APPDATA, ".vape.encrypted"),
-        os.path.join(APPDATA, "ghost"),
-        os.path.join(APPDATA, ".ghost"),
-        os.path.join(APPDATA, "Flux"),
-        os.path.join(APPDATA, ".flux"),
-        os.path.join(APPDATA, "Reflex"),
-        os.path.join(APPDATA, "Tenacity"),
-        os.path.join(APPDATA, "Rise"),
-        os.path.join(APPDATA, ".rise"),
-        os.path.join(APPDATA, "Moon"),
-        os.path.join(APPDATA, "Crypt"),
-        os.path.join(APPDATA, "Praxis"),
-        os.path.join(APPDATA, "Hexed"),
-        os.path.join(APPDATA, "Zenith"),
-        os.path.join(LOCALAPPDATA, "Temp", "inject"),
-        os.path.join(LOCALAPPDATA, "Temp", "payload"),
-        os.path.join(USERPROFILE, ".crypt"),
-        os.path.join(USERPROFILE, ".praxis"),
-        os.path.join(USERPROFILE, ".hexed"),
-    ]
-    found_any = False
-    for path in ghost_paths:
-        if os.path.exists(path):
-            found(f"Ghost artifact: {path}")
-            found_any = True
-
-    info("Scanning Temp for injection artifacts...")
-    inject_keys = ["inject", "hook", "payload", "ghost", "vape", "cheat", "sigma", "flux"]
-    for ext in ["*.dll", "*.exe", "*.jar", "*.bat", "*.vbs", "*.ps1"]:
-        out = run(f'dir "{TEMP}" /s /b {ext} 2>nul')
-        for line in out.splitlines():
-            if any(k in line.lower() for k in inject_keys):
-                found(f"Suspicious temp file: {line}")
-                found_any = True
-
-    info("Scanning for .agent / javaagent files...")
-    for base in [APPDATA, LOCALAPPDATA, MINECRAFT, TEMP]:
-        if not os.path.exists(base):
-            continue
-        out = run(f'dir "{base}" /s /b *.agent 2>nul')
-        for line in out.splitlines():
-            found(f"Agent file: {line}")
-            found_any = True
-
-    if not found_any:
-        info("No ghost client artifacts found.")
-    pause()
-
-
-def check_discord():
-    clear()
-    header("Discord Artifact & Inject Check")
-    discord_base = os.path.join(APPDATA, "discord")
-    if os.path.exists(discord_base):
-        found(f"Discord AppData: {discord_base}")
-        inject_keywords = ["inject", "cheat", "hook", "vape", "sigma"]
-        for root, _, files in os.walk(discord_base):
-            for f in files:
-                if any(k in f.lower() for k in inject_keywords):
-                    found(f"Suspicious Discord file: {os.path.join(root, f)}")
-    else:
-        info("Discord AppData folder not found.")
-
-    bd_path = os.path.join(APPDATA, "BetterDiscord")
-    if os.path.exists(bd_path):
-        warn(f"BetterDiscord found: {bd_path}")
-        plugins = os.path.join(bd_path, "data", "stable", "plugins")
-        if os.path.exists(plugins):
-            for f in os.listdir(plugins):
-                print(f"  Plugin: {f}")
-    else:
-        info("BetterDiscord: not found")
-
-    info("Checking Discord process for injected modules...")
-    out = run('tasklist /m /fi "imagename eq Discord.exe"')
-    for line in out.splitlines():
-        if any(k in line.lower() for k in ["inject", "hook", "cheat", "payload"]):
-            found(f"Suspicious module in Discord: {line.strip()}")
-    pause()
-
-
-def check_autorun_enhanced():
-    clear()
-    header("Enhanced Autorun / Persistence Check")
-    persistence_keys = [
-        (r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",          "HKCU Run"),
-        (r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce",      "HKCU RunOnce"),
-        (r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run",          "HKLM Run"),
-        (r"HKLM\Software\Microsoft\Windows\CurrentVersion\RunOnce",      "HKLM RunOnce"),
-        (r"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon",  "Winlogon"),
-        (r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Windows",   "HKCU Windows Load"),
-        (r"HKCU\Environment",                                            "User Environment"),
-    ]
-    cheat_keywords = ["inject", "cheat", "wurst", "sigma", "vape", "rat",
-                      "anydesk", "teamviewer", "payload", "hook", "ghost"]
-    for key, label in persistence_keys:
-        out = run(f'reg query "{key}"')
-        flagged_lines = [l.strip() for l in out.splitlines()
-                         if any(k in l.lower() for k in cheat_keywords)]
-        if flagged_lines:
-            for fl in flagged_lines:
-                found(f"[{label}] {fl}")
-        else:
-            info(f"{label}: clean")
-
-    startup = os.path.join(APPDATA, r"Microsoft\Windows\Start Menu\Programs\Startup")
-    info(f"\nStartup folder: {startup}")
-    if os.path.exists(startup):
-        files = os.listdir(startup)
-        if files:
-            for f in files:
-                print(f"  {f}")
-        else:
-            print("  Empty.")
-    pause()
-
-
-def check_userassist():
-    clear()
-    header("UserAssist — GUI Programs Launched (with timestamps)")
-    info("UserAssist records every GUI program run via Explorer, with run count and last run time.")
-    info("Values are ROT-13 encoded — use UserAssistView (NirSoft) for decoded output.")
-    key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"
-    out = run(f'reg query "{key}" /s')
-
-    keywords = [
-        "cheat", "hack", "inject", "wurst", "sigma", "vape", "future",
-        "meteor", "aristois", "payload", "rat", "anydesk", "teamviewer",
-        "reflex", "flux", "killaura", "autoclick", "ghost", "prestige",
-        "luyten", "recaf", "jd-gui", "bytecode",
-    ]
-    info("Flagged UserAssist entries (ROT-13 decoded inline):")
-    import codecs
-    flagged = False
-    for line in out.splitlines():
-        try:
-            decoded = codecs.decode(line, "rot_13")
-        except:
-            decoded = line
-        if any(k in decoded.lower() for k in keywords):
-            found(f"{line.strip()}  →  {decoded.strip()}")
-            flagged = True
-    if not flagged:
-        info("No suspicious entries found (ROT-13 pass).")
-    info("\nRaw UserAssist output:")
-    print(out)
-    pause()
-
-
-def check_typed_paths():
-    clear()
-    header("TypedPaths — Paths Typed into Explorer Address Bar")
-    key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths"
-    out = run(f'reg query "{key}"')
-    info("All typed paths:")
-    print(out if out else "  (none found)")
-    pause()
-
-
-def check_run_mru():
-    clear()
-    header("RunMRU — Commands Run via Win+R")
-    key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"
-    out = run(f'reg query "{key}"')
-    info("All Win+R commands:")
-    print(out if out else "  (none found)")
-    pause()
-
-
-def check_deleted_recently():
-    clear()
-    header("Recycle Bin Contents")
-    info("Checking Recycle Bin on all drives...")
-    for drive in ["C", "D", "E"]:
-        rb = f"{drive}:\\$Recycle.Bin"
-        if os.path.exists(rb):
-            info(f"Drive {drive}: Recycle Bin found")
-            try:
-                out = run(f'dir "{rb}" /s /b /a 2>nul')
-                if out:
-                    for line in out.splitlines()[:50]:
-                        print(f"  {line}")
-                else:
-                    print("  (empty or access denied)")
-            except:
-                print("  (access denied)")
-    pause()
-
-
-def check_event_log_cleared():
-    clear()
-    header("Event Log Cleared / Tampered Check")
-    info("Checking if security/system logs were recently cleared (a red flag)...")
-    cmds = [
-        ("Security log cleared (1102)", 'wevtutil qe Security /q:"*[System[EventID=1102]]" /f:text /c:10'),
-        ("System log cleared (104)",    'wevtutil qe System /q:"*[System[EventID=104]]" /f:text /c:10'),
-        ("Audit policy changed (4719)", 'wevtutil qe Security /q:"*[System[EventID=4719]]" /f:text /c:10'),
-    ]
-    found_any = False
-    for label, cmd in cmds:
-        out = run(cmd)
-        if out and "Event[" in out:
-            found(f"{label}:\n{out}")
-            found_any = True
-        else:
-            info(f"{label}: no events found")
-    if not found_any:
-        info("No log-clearing events detected.")
-    pause()
-
-
-# ── Full scan ─────────────────────────────────────────────────────────────────
-
 def full_scan():
     clear()
     header("Full Auto Scan")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     info(f"Scan started at {now}")
     print()
-    info("[1/15] AppData cheat folders...")
+    info("[1/11] AppData cheat folders...")
     for client in CHEAT_CLIENTS:
         for base in [APPDATA, LOCALAPPDATA]:
             if os.path.exists(os.path.join(base, client)):
                 found(f"{client} in {base}")
-    info("[2/15] Java processes...")
+    info("[2/11] Java processes...")
     print(run("tasklist /fi \"imagename eq javaw.exe\""))
-    info("[2a/15] Java injection module scan...")
+    info("[2a/11] Java injection module scan...")
     scan_java_injection()
-    info("[3/15] Suspicious processes...")
+    info("[3/11] Suspicious processes...")
     all_procs = run("tasklist").lower()
     for s in SUSPICIOUS_PROCS:
         if s in all_procs:
             found(f"Process: {s}")
-    info("[4/15] .minecraft mods...")
+    info("[4/11] .minecraft mods...")
     mods = os.path.join(MINECRAFT, "mods")
     if os.path.exists(mods):
         files = os.listdir(mods)
         print("  " + "\n  ".join(files) if files else "  Empty.")
     else:
         info("No mods folder.")
-    info("[5/15] Startup entries...")
+    info("[5/11] Startup entries...")
     print(run("reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"))
-    info("[6/15] Temp executables...")
+    info("[6/11] Temp executables...")
     for ext in ["*.exe", "*.jar"]:
         out = run(f'dir "{TEMP}" /b {ext} 2>nul')
         if out:
             warn(f"{ext} in temp: {out}")
-    info("[7/15] Hosts file...")
+    info("[7/11] Hosts file...")
     hosts = r"C:\Windows\System32\drivers\etc\hosts"
     if os.path.exists(hosts):
         with open(hosts) as f:
             for line in f:
                 if line.strip() and not line.startswith("#"):
                     print(f"  {line.strip()}")
-    info("[8/15] Prefetch suspicious names...")
+    info("[8/11] Prefetch suspicious names...")
     out = run("dir C:\\Windows\\Prefetch /od /b *.pf")
     for line in out.splitlines():
-        if any(k in line.lower() for k in ["cheat", "inject", "wurst", "sigma", "vape",
-                                            "anydesk", "teamviewer", "reflex", "luyten"]):
+        if any(k in line.lower() for k in ["cheat","inject","wurst","sigma","vape","ccleaner","bleachbit"]):
             found(f"Prefetch: {line}")
-    info("[9/15] Scheduled tasks...")
+    info("[9/11] Scheduled tasks...")
     out = run("schtasks /query /fo LIST")
     for line in out.splitlines():
         if "Task Name:" in line:
             print(f"  {line.strip()}")
-    info("[10/15] VPN/virtual adapters...")
+    info("[10/11] VPN/virtual adapters...")
     out = run("ipconfig /all")
     for line in out.splitlines():
         if "description" in line.lower():
-            if any(k in line.lower() for k in ["virtual", "vpn", "tap", "tunnel", "hamachi"]):
+            if any(k in line.lower() for k in ["virtual","vpn","tap","tunnel","hamachi"]):
                 found(line.strip())
-    info("[11/15] Remote access tools...")
-    all_procs2 = run("tasklist").lower()
-    for name, folders, procs in REMOTE_ACCESS_TOOLS:
-        folder_hit = any(os.path.exists(os.path.join(base, f))
-                         for f in folders
-                         for base in [APPDATA, LOCALAPPDATA,
-                                      os.environ.get("PROGRAMFILES", "C:\\Program Files")])
-        proc_hit = any(p.lower() in all_procs2 for p in procs)
-        if folder_hit or proc_hit:
-            found(f"Remote access: {name} ({'installed' if folder_hit else ''} {'RUNNING' if proc_hit else ''})")
-    info("[12/15] BAM recently executed programs...")
-    bam_out = run(r'reg query "HKLM\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings" /s')
-    bam_keys = ["cheat", "vape", "sigma", "inject", "anydesk", "teamviewer", "luyten", "ghost"]
-    for line in bam_out.splitlines():
-        if r"\device\harddiskvolume" in line.lower():
-            if any(k in line.lower() for k in bam_keys):
-                found(f"BAM: {line.strip()}")
-    info("[13/15] MUICache programs run...")
-    mui_out = run(r'reg query "HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"')
-    mui_keys = ["cheat", "inject", "vape", "sigma", "anydesk", "teamviewer", "luyten", "recaf"]
-    for line in mui_out.splitlines():
-        if any(k in line.lower() for k in mui_keys):
-            found(f"MUICache: {line.strip()}")
-    info("[14/15] Ghost client artifacts...")
-    ghost_paths_quick = [
-        os.path.join(APPDATA, ".vape"), os.path.join(APPDATA, "Vape"),
-        os.path.join(APPDATA, "Flux"), os.path.join(APPDATA, "Reflex"),
-        os.path.join(APPDATA, "Tenacity"), os.path.join(APPDATA, "ghost"),
-    ]
-    for gp in ghost_paths_quick:
-        if os.path.exists(gp):
-            found(f"Ghost artifact: {gp}")
-    info("[15/15] PowerShell history...")
-    hist = os.path.join(APPDATA, r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt")
-    if os.path.exists(hist):
-        with open(hist, "r", errors="ignore") as f:
-            for line in f:
-                if any(k in line.lower() for k in ["anydesk", "inject", "cheat", "base64", "bypass"]):
-                    found(f"PS History: {line.strip()}")
+    info("[11/11] Browser wipe check...")
+    for browser, root in BROWSER_PROFILES.items():
+        profiles = _chromium_profiles(root)
+        for profile in profiles:
+            hist_db = os.path.join(profile, "History")
+            if not os.path.exists(hist_db):
+                warn(f"{browser} history file MISSING — possibly wiped!")
+            elif os.path.getsize(hist_db) < 40960:
+                warn(f"{browser} history DB suspiciously small — possibly cleared!")
     print()
     info(f"Scan complete — {datetime.now().strftime('%H:%M:%S')}")
     pause()
-
 
 def save_full_scan_report():
     clear()
     header("Save Full Scan Report")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines = ["SS HELPER REPORT", f"Scan started at {now}", "", "[1] AppData cheat folders"]
+    lines = [
+        "SS HELPER REPORT",
+        f"Scan started at {now}",
+        "",
+        "[1] AppData cheat folders",
+    ]
+
     for client in CHEAT_CLIENTS:
         for base in [APPDATA, LOCALAPPDATA]:
             path = os.path.join(base, client)
             if os.path.exists(path):
                 lines.append(f"FOUND: {client} in {path}")
-    lines.extend(["", "[2] Java processes",
-                  run("tasklist /fi \"imagename eq javaw.exe\""),
-                  run("tasklist /fi \"imagename eq java.exe\""),
-                  "", "[2a] Java injection modules",
-                  run("tasklist /m /fi \"imagename eq javaw.exe\""),
-                  run("tasklist /m /fi \"imagename eq java.exe\""),
-                  "", "[3] Suspicious processes"])
+
+    lines.extend([
+        "",
+        "[2] Java processes",
+        run("tasklist /fi \"imagename eq javaw.exe\""),
+        run("tasklist /fi \"imagename eq java.exe\""),
+        "",
+        "[2a] Java injection modules",
+        run("tasklist /m /fi \"imagename eq javaw.exe\""),
+        run("tasklist /m /fi \"imagename eq java.exe\""),
+        "",
+        "[3] Suspicious processes",
+    ])
     all_procs = run("tasklist").lower()
     for s in SUSPICIOUS_PROCS:
         if s in all_procs:
             lines.append(f"FOUND: {s}")
+
     lines.extend(["", "[4] .minecraft mods"])
     mods = os.path.join(MINECRAFT, "mods")
     if os.path.exists(mods):
@@ -1185,15 +1206,21 @@ def save_full_scan_report():
         lines.extend(files if files else ["Empty"])
     else:
         lines.append("No mods folder.")
-    lines.extend(["", "[5] Startup entries",
-                  run("reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
-                  run("reg query HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
-                  "", "[6] Temp executables"])
+
+    lines.extend([
+        "",
+        "[5] Startup entries",
+        run("reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+        run("reg query HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+        "",
+        "[6] Temp executables",
+    ])
     for ext in ["*.exe", "*.jar"]:
         out = run(f'dir "{TEMP}" /b {ext} 2>nul')
         if out:
-            lines.append(f"{ext}: {out}")
-    lines.extend(["", "[7] Hosts file"])
+            lines.append(f"{ext}: {out.replace(chr(10), chr(10) + '    ')}")
+
+    lines.extend(["", "[7] Hosts file (non-comment lines)"])
     hosts = r"C:\Windows\System32\drivers\etc\hosts"
     if os.path.exists(hosts):
         with open(hosts, "r", errors="ignore") as f:
@@ -1201,37 +1228,25 @@ def save_full_scan_report():
                 line = line.strip()
                 if line and not line.startswith("#"):
                     lines.append(line)
+    else:
+        lines.append("Hosts file not found.")
+
     lines.extend(["", "[8] Prefetch suspicious names"])
     out = run("dir C:\\Windows\\Prefetch /od /b *.pf")
     for line in out.splitlines():
-        if any(k in line.lower() for k in ["cheat", "inject", "wurst", "sigma", "vape",
-                                            "anydesk", "teamviewer", "luyten"]):
+        if any(k in line.lower() for k in ["cheat","inject","wurst","sigma","vape"]):
             lines.append(line)
-    lines.extend(["", "[9] Scheduled tasks", run("schtasks /query /fo LIST"),
-                  "", "[10] VPN/virtual adapters", run("ipconfig /all"),
-                  "", "[11] Remote access tools"])
-    all_procs2 = run("tasklist").lower()
-    for name, folders, procs in REMOTE_ACCESS_TOOLS:
-        folder_hit = any(os.path.exists(os.path.join(base, f))
-                         for f in folders
-                         for base in [APPDATA, LOCALAPPDATA,
-                                      os.environ.get("PROGRAMFILES", "C:\\Program Files")])
-        proc_hit = any(p.lower() in all_procs2 for p in procs)
-        if folder_hit or proc_hit:
-            lines.append(f"FOUND: {name} ({'installed' if folder_hit else ''} {'RUNNING' if proc_hit else ''})")
-    lines.extend(["", "[12] BAM recently executed",
-                  run(r'reg query "HKLM\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings" /s'),
-                  "", "[13] MUICache",
-                  run(r'reg query "HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"'),
-                  "", "[14] UserAssist",
-                  run(r'reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist" /s'),
-                  "", "[15] PowerShell history"])
-    hist = os.path.join(APPDATA, r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt")
-    if os.path.exists(hist):
-        with open(hist, "r", errors="ignore") as f:
-            lines.extend(f.readlines())
 
-    filename = f"SSHelper_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    lines.extend([
+        "",
+        "[9] Scheduled tasks",
+        run("schtasks /query /fo LIST"),
+        "",
+        "[10] VPN/virtual adapters",
+        run("ipconfig /all"),
+    ])
+
+    filename = f"OceanSS_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     dump_to_desktop(filename, "\n".join(lines))
     pause()
 
@@ -1248,6 +1263,7 @@ def dump_to_desktop(filename, content):
     with open(path, "w") as f:
         f.write(content)
     info(f"Saved to Desktop: {filename}")
+    pause()
 
 def dump_to_downloads(filename, content):
     os.makedirs(DOWNLOADS, exist_ok=True)
@@ -1286,13 +1302,13 @@ def hwid_extractor():
     lines.append(f"Computer Name  : {os.environ.get('COMPUTERNAME','')}")
     lines.append(f"User Domain    : {os.environ.get('USERDOMAIN','')}")
     for label, cmd in [
-        ("UUID",          "wmic path win32_computersystemproduct get uuid"),
-        ("MAC Address",   "getmac"),
-        ("CPU ID",        "wmic cpu get ProcessorId"),
-        ("Disk Serial",   "wmic diskdrive get serialnumber"),
-        ("RAM Serial",    "wmic memorychip get serialnumber"),
-        ("Baseboard S/N", "wmic baseboard get serialnumber"),
-        ("CPU Name",      "wmic cpu get name"),
+        ("UUID",           "wmic path win32_computersystemproduct get uuid"),
+        ("MAC Address",    "getmac"),
+        ("CPU ID",         "wmic cpu get ProcessorId"),
+        ("Disk Serial",    "wmic diskdrive get serialnumber"),
+        ("RAM Serial",     "wmic memorychip get serialnumber"),
+        ("Baseboard S/N",  "wmic baseboard get serialnumber"),
+        ("CPU Name",       "wmic cpu get name"),
     ]:
         lines.append(f"\n--- {label} ---")
         lines.append(run(cmd))
@@ -1313,7 +1329,6 @@ def menu_manual_tools():
         items = [
             ("PH2",   "Process Hacker 2"),
             ("LAV",   "LastActivityView"),
-            ("UAV",   "UserAssistView"),
             ("WPV",   "WinPrefetchView"),
             ("LYT",   "Luyten (JAR decompiler)"),
             ("ERT",   "Everything (file search)"),
@@ -1325,7 +1340,6 @@ def menu_manual_tools():
             ("BDV",   "Browser Downloads View"),
             ("BHV",   "BrowsingHistoryView"),
             ("OFV",   "OpenSaveFilesView"),
-            ("OFV2",  "OpenedFilesView (live open files)"),
             ("RFV",   "RecentFilesView"),
             ("LDV",   "LoadedDLLsView"),
             ("HV",    "HistoryViewer"),
@@ -1338,15 +1352,8 @@ def menu_manual_tools():
             ("WDTV",  "WinDefender ThreatsView"),
             ("KBSV",  "KeyboardStateView"),
             ("JLV",   "JumpListsView"),
+            ("ADS",   "AlternateDataStream viewer"),
             ("FELV",  "FullEventLogView"),
-            ("SMF",   "SearchMyFiles"),
-            ("WIN",   "WinLogonView"),
-            ("PSV",   "ProcessActivityView"),
-            ("SAV",   "StartupRunView"),
-            ("FCV",   "FolderChangesView"),
-            ("DNV",   "DNSQuerySniffer"),
-            ("USBDV", "USBDeview"),
-            ("PFR",   "Previous Files Recovery"),
             ("AMP",   "Amcache Parser (EZ Tools)"),
             ("TLE",   "Timeline Explorer (EZ Tools)"),
             ("RYE",   "Registry Explorer (EZ Tools)"),
@@ -1354,6 +1361,8 @@ def menu_manual_tools():
             ("EEC",   "EvtxECmd (EZ Tools)"),
             ("WTC",   "WxTCmd (EZ Tools)"),
             ("MFTE",  "MFTECmd (EZ Tools)"),
+            ("USBDV", "USBDeview"),
+            ("PFR",   "Previous Files Recovery"),
         ]
         for code, name in items:
             print(f"  [{code}]  {name}")
@@ -1363,19 +1372,17 @@ def menu_manual_tools():
         urls = {
             "PH2":   ("https://github.com/processhacker/processhacker/releases/download/v2.39/processhacker-2.39-setup.exe", "ProcessHacker2-Setup.exe"),
             "LAV":   ("https://www.nirsoft.net/utils/lastactivityview.zip",            "LastActivityView.zip"),
-            "UAV":   ("https://www.nirsoft.net/utils/userassist_view.zip",             "UserAssistView.zip"),
             "WPV":   ("https://www.nirsoft.net/utils/winprefetchview-x64.zip",         "WinPrefetchView.zip"),
             "LYT":   ("https://github.com/deathmarine/Luyten/releases/download/v0.5.4_Rebuilt_with_Latest_depenencies/luyten-0.5.4.exe", "Luyten.exe"),
             "ERT":   ("https://www.voidtools.com/Everything-1.4.1.1005.x64.zip",       "Everything.zip"),
             "ASV":   ("https://www.nirsoft.net/utils/alternatestreamview-x64.zip",     "AlternateStreamView.zip"),
             "RGS":   ("https://www.nirsoft.net/utils/regscanner-x64.zip",              "RegScanner.zip"),
             "EPF":   ("https://www.nirsoft.net/utils/executedprogramslist.zip",        "ExecutedProgramsList.zip"),
-            "MCV":   ("https://www.nirsoft.net/utils/muicacheview.zip",                "MUICacheView.zip"),
+            "MCV":   ("http://www.nirsoft.net/utils/muicacheview.zip",                 "MUICacheView.zip"),
             "SBV":   ("https://www.nirsoft.net/utils/shellbagsview.zip",               "ShellBagsView.zip"),
             "BDV":   ("https://www.nirsoft.net/utils/browserdownloadsview-x64.zip",   "BrowserDownloadsView.zip"),
             "BHV":   ("https://www.nirsoft.net/utils/browsinghistoryview-x64.zip",    "BrowsingHistoryView.zip"),
             "OFV":   ("https://www.nirsoft.net/utils/opensavefilesview-x64.zip",      "OpenSaveFilesView.zip"),
-            "OFV2":  ("https://www.nirsoft.net/utils/openedfilesview-x64.zip",        "OpenedFilesView.zip"),
             "RFV":   ("https://www.nirsoft.net/utils/recentfilesview.zip",             "RecentFilesView.zip"),
             "LDV":   ("https://www.nirsoft.net/utils/loadeddllsview-x64.zip",         "LoadedDLLsView.zip"),
             "HV":    ("https://chicho.lol/downloads/hvsetup.exe",                     "HistoryViewer-Setup.exe"),
@@ -1388,15 +1395,8 @@ def menu_manual_tools():
             "WDTV":  ("https://www.nirsoft.net/utils/wdthreatsview.zip",              "WinDefThreatsView.zip"),
             "KBSV":  ("https://www.nirsoft.net/utils/keyboardstatesview.zip",         "KeyboardStateView.zip"),
             "JLV":   ("https://www.nirsoft.net/utils/jumplistsview.zip",              "JumpListsView.zip"),
+            "ADS":   ("https://www.nirsoft.net/utils/alternatestreamview-x64.zip",    "ADS-View.zip"),
             "FELV":  ("https://www.nirsoft.net/utils/fulleventlogview-x64.zip",       "FullEventLogView.zip"),
-            "SMF":   ("https://www.nirsoft.net/utils/searchmyfiles.zip",              "SearchMyFiles.zip"),
-            "WIN":   ("https://www.nirsoft.net/utils/winlogonview.zip",               "WinLogonView.zip"),
-            "PSV":   ("https://www.nirsoft.net/utils/processactivityview.zip",        "ProcessActivityView.zip"),
-            "SAV":   ("https://www.nirsoft.net/utils/startuprunview.zip",             "StartupRunView.zip"),
-            "FCV":   ("https://www.nirsoft.net/utils/folderchangesview.zip",          "FolderChangesView.zip"),
-            "DNV":   ("https://www.nirsoft.net/utils/dns_query_sniffer.zip",          "DNSQuerySniffer.zip"),
-            "USBDV": ("https://www.nirsoft.net/utils/usbdeview-x64.zip",              "USBDeview.zip"),
-            "PFR":   ("https://www.nirsoft.net/utils/previousfilesrecovery-x64.zip",  "PreviousFilesRecovery.zip"),
             "AMP":   ("https://github.com/EricZimmerman/AmcacheParser/releases/latest/download/AmcacheParser.zip", "AmcacheParser.zip"),
             "TLE":   ("https://github.com/EricZimmerman/Timeline-Explorer/releases/latest/download/TimelineExplorer.zip", "TimelineExplorer.zip"),
             "RYE":   ("https://github.com/EricZimmerman/RegistryExplorer/releases/latest/download/RegistryExplorer.zip", "RegistryExplorer.zip"),
@@ -1404,6 +1404,8 @@ def menu_manual_tools():
             "EEC":   ("https://github.com/EricZimmerman/evtx/releases/latest/download/EvtxECmd.zip", "EvtxECmd.zip"),
             "WTC":   ("https://github.com/EricZimmerman/WxTCmd/releases/latest/download/WxTCmd.zip", "WxTCmd.zip"),
             "MFTE":  ("https://github.com/EricZimmerman/MFTECmd/releases/latest/download/MFTECmd.zip","MFTECmd.zip"),
+            "USBDV": ("https://www.nirsoft.net/utils/usbdeview-x64.zip",              "USBDeview.zip"),
+            "PFR":   ("https://www.nirsoft.net/utils/previousfilesrecovery-x64.zip",  "PreviousFilesRecovery.zip"),
         }
 
         if choice == "0":
@@ -1422,10 +1424,10 @@ def menu_recovery_tools():
         clear()
         header("Recovery File Tools")
         items = [
-            ("Recuva",    "Recuva",               "https://www.ccleaner.com/recuva/download/standard",              "RecuvaSetup.exe"),
-            ("EaseUS",    "EaseUS Data Recovery",  "https://down.easeus.com/product/drw_trial",                     "EaseUS-DR-Setup.exe"),
-            ("Glarysoft", "Glarysoft File Recovery","https://www.glarysoft.com/file-recovery/download/",             "GlarysoftFileRecovery.exe"),
-            ("KickAss",   "KickAssUndelete",       "https://www.kickassundelete.com/download/KickAssUndelete.exe",   "KickAssUndelete.exe"),
+            ("Recuva",    "Recuva",               "https://www.ccleaner.com/recuva/download/standard",        "RecuvaSetup.exe"),
+            ("EaseUS",    "EaseUS Data Recovery",  "https://down.easeus.com/product/drw_trial",               "EaseUS-DR-Setup.exe"),
+            ("Glarysoft", "Glarysoft File Recovery","https://www.glarysoft.com/file-recovery/download/",      "GlarysoftFileRecovery.exe"),
+            ("KickAss",   "KickAssUndelete",       "https://www.kickassundelete.com/download/KickAssUndelete.exe","KickAssUndelete.exe"),
         ]
         for code, name, _, _ in items:
             print(f"  [{code}]  {name}")
@@ -1440,7 +1442,7 @@ def menu_recovery_tools():
             warn("Invalid choice.")
             input("  Press Enter to continue...")
 
-# ── Explorer paths ────────────────────────────────────────────────────────────
+# ── Explorer Paths ────────────────────────────────────────────────────────────
 
 def menu_explorer():
     while True:
@@ -1455,16 +1457,18 @@ def menu_explorer():
             "HIS":  ("History",             os.path.join(LOCALAPPDATA, r"Microsoft\Windows\History")),
             "UL":   ("Usage Logs",          os.path.join(LOCALAPPDATA, r"Microsoft\Windows\UsageLogs")),
             "CD":   ("Crash Dumps",         os.path.join(LOCALAPPDATA, r"CrashDumps")),
-            "RA":   ("Report Archive",      os.path.join(os.environ.get("PROGRAMDATA","C:\\ProgramData"), r"Microsoft\Windows\WER\ReportArchive")),
-            "CB":   ("Clipboard Cache",     os.path.join(LOCALAPPDATA, r"Microsoft\Windows\Clipboard")),
+            "RA":   ("Report Archive",      os.path.join(PROGRAMDATA, r"Microsoft\Windows\WER\ReportArchive")),
             "CF":   ("Control Panel",       "control"),
             "FW":   ("Firewall",            "wf.msc"),
             "NP":   ("Netplwiz",            "netplwiz"),
             "SRV":  ("Services",            "services.msc"),
             "DM":   ("Disk Management",     "diskmgmt.msc"),
             "GPE":  ("Group Policy Editor", "gpedit.msc"),
-            "DRS":  ("Nvidia DRS folder",   os.path.join(os.environ.get("PROGRAMDATA","C:\\ProgramData"), r"NVIDIA Corporation\Drs")),
-            "DL":   ("SSHelper Downloads",  DOWNLOADS),
+            "DRS":  ("Nvidia DRS folder",   os.path.join(PROGRAMDATA, r"NVIDIA Corporation\Drs")),
+            "CHR":  ("Chrome User Data",    os.path.join(LOCALAPPDATA, r"Google\Chrome\User Data")),
+            "EDG":  ("Edge User Data",      os.path.join(LOCALAPPDATA, r"Microsoft\Edge\User Data")),
+            "BRV":  ("Brave User Data",     os.path.join(LOCALAPPDATA, r"BraveSoftware\Brave-Browser\User Data")),
+            "FFX":  ("Firefox Profiles",    FIREFOX_ROOT),
         }
         for code, (name, _) in paths.items():
             print(f"  [{code}]  {name}")
@@ -1475,7 +1479,7 @@ def menu_explorer():
         elif choice in paths:
             name, target = paths[choice]
             info(f"Opening {name}...")
-            if target.endswith(".msc") or target in ("control", "netplwiz"):
+            if target.endswith(".msc") or target in ("control", "netplwiz", "gpedit.msc"):
                 subprocess.Popen(target, shell=True)
             elif target.startswith("shell:"):
                 subprocess.Popen(f"explorer {target}", shell=True)
@@ -1512,6 +1516,7 @@ def menu_usn_journal():
             desc, cmd = options[choice]
             clear()
             header(f"USN: {desc}")
+            info(f"Running: {cmd}")
             print(run(cmd) or "  (no output or fsutil not available)")
             pause()
         else:
@@ -1533,7 +1538,7 @@ def menu_commands():
             "NS":   ("NTFS USN journal state",     "fsutil usn queryjournal C:"),
             "MMA":  ("MMAgent settings",           "powershell Get-MMAgent"),
             "TNC":  ("Test network (8.8.8.8)",     "powershell Test-NetConnection 8.8.8.8"),
-            "SCM":  ("Service control manager",    "sc query type= all state= all"),
+            "SCM":  ("Service control manager",    'sc query type= all state= all'),
             "DPS":  ("Query DPS service",          "sc queryex dps"),
             "PCA":  ("Query PcaSvc service",       "sc queryex PcaSvc"),
             "EVL":  ("Query Eventlog service",     "sc queryex eventlog"),
@@ -1542,9 +1547,6 @@ def menu_commands():
             "APPI": ("Query AppInfo service",      "sc queryex Appinfo"),
             "DIRA": ("Folder modification dates",  f'dir "{USERPROFILE}" /ad /tc'),
             "GETP": ("Get-Process (PowerShell)",   "powershell Get-Process | Sort-Object CPU -Descending | Select-Object -First 30"),
-            "ARP":  ("ARP table (LAN devices)",    "arp -a"),
-            "DNS":  ("DNS cache",                  "ipconfig /displaydns"),
-            "FW":   ("Firewall rules (outbound)",  "netsh advfirewall firewall show rule name=all dir=out"),
         }
         for code, (desc, _) in options.items():
             print(f"  [{code}]  {desc}")
@@ -1562,17 +1564,17 @@ def menu_commands():
             warn("Invalid choice.")
             input("  Press Enter to continue...")
 
-# ── Registry paths ────────────────────────────────────────────────────────────
+# ── Registry ──────────────────────────────────────────────────────────────────
 
 def menu_regedit():
     while True:
         clear()
-        header("Registry Paths  (query reg keys)")
+        header("Registry Paths  (query / view reg keys)")
         paths = {
             "EF":   ("Executable files ran",          r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store"),
             "DR":   ("Disallow Run",                  r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun"),
             "MCC":  ("MUICache",                      r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"),
-            "AH":   ("Run MRU (Win+R history)",       r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"),
+            "AH":   ("Arc History",                   r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"),
             "APPS": ("AppSwitched",                   r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FeatureUsage\AppSwitched"),
             "UA":   ("UserAssist",                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"),
             "EP":   ("Executed programs (BAM)",       r"SYSTEM\CurrentControlSet\Services\bam\State\UserSettings"),
@@ -1580,18 +1582,22 @@ def menu_regedit():
             "OS":   ("Open/Save dialog files",        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU"),
             "MV":   ("Mounted volumes",               r"HKLM\SYSTEM\MountedDevices"),
             "PF":   ("Prefetch parameters",           r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"),
+            "OP":   ("OpenWithList",                  r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts"),
             "RD":   ("RecentDocs",                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"),
+            "SJV":  ("ShowJumpView",                  r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"),
             "LVP":  ("LastVisitedPidlMRU",            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU"),
             "EN":   ("Environment variables",         r"HKCU\Environment"),
             "FR":   ("Firewall rules",                r"HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules"),
             "UN":   ("Uninstall list",                r"HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall"),
             "DI":   ("DirectInput devices",           r"HKCU\System\CurrentControlSet\Control\MediaProperties\PrivateProperties\DirectInput"),
+            "CSM":  ("CIDsizeMRU",                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\CIDSizeMRU"),
             "TPS":  ("TypedPaths",                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths"),
+            "SMI":  ("StartMenuInternet",             r"HKLM\Software\Clients\StartMenuInternet"),
             "CP":   ("Command Processor",             r"HKCU\Software\Microsoft\Command Processor"),
+            "VIC":  ("VolumeInfoCache",               r"HKLM\Software\Microsoft\Windows Search\VolumeInfoCache"),
             "USBS": ("USB Storage devices",           r"HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR"),
+            "RMRU": ("Run MRU",                       r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"),
             "TRA":  ("Tracing",                       r"HKLM\Software\Microsoft\Tracing"),
-            "AMC":  ("Amcache (recent programs)",     r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Appraiser\Amcache"),
-            "WIM":  ("Windows Image (install info)",  r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"),
         }
         for code, (desc, _) in paths.items():
             print(f"  [{code}]  {desc}")
@@ -1624,8 +1630,6 @@ def menu_eventviewer():
             "AJ":  ("App log — deleted journal",             'wevtutil qe Application /q:"*[System[EventID=45]]" /f:text /c:20'),
             "NJ":  ("NTFS — deleted journal (ID 98)",        'wevtutil qe System /q:"*[System[EventID=98]]" /f:text /c:20'),
             "USB": ("USB connected (ID 2003/2004)",          'wevtutil qe Microsoft-Windows-DriverFrameworks-UserMode/Operational /q:"*[System[(EventID=2003 or EventID=2004)]]" /f:text /c:20'),
-            "AU":  ("Audit policy changed (4719)",           'wevtutil qe Security /q:"*[System[EventID=4719]]" /f:text /c:10'),
-            "FW":  ("Firewall rule changed (4946/4947)",     'wevtutil qe Security /q:"*[System[(EventID=4946 or EventID=4947)]]" /f:text /c:10'),
         }
         for code, (desc, _) in options.items():
             print(f"  [{code}]  {desc}")
@@ -1643,7 +1647,7 @@ def menu_eventviewer():
             warn("Invalid choice.")
             input("  Press Enter to continue...")
 
-# ── Macro / recording scanners ────────────────────────────────────────────────
+# ── Macro scanner ─────────────────────────────────────────────────────────────
 
 def check_macros():
     clear()
@@ -1655,14 +1659,16 @@ def check_macros():
         "TinyTask", "GS Auto Clicker", "OP Auto Clicker",
         "MacroGamer", "MacroToolworks", "Perfect Keyboard",
     ]
+    info("Scanning AppData and Program Files for macro software...")
     found_any = False
     search_bases = [APPDATA, LOCALAPPDATA,
-                    os.environ.get("PROGRAMFILES", "C:\\Program Files"),
-                    os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")]
+                    os.environ.get("PROGRAMFILES","C:\\Program Files"),
+                    os.environ.get("PROGRAMFILES(X86)","C:\\Program Files (x86)")]
     for macro in macros:
         for base in search_bases:
-            if os.path.exists(os.path.join(base, macro)):
-                found(f"{macro} → {os.path.join(base, macro)}")
+            path = os.path.join(base, macro)
+            if os.path.exists(path):
+                found(f"{macro} → {path}")
                 found_any = True
     all_procs = run("tasklist").lower()
     for m in ["ahk", "autohotkey", "ghub", "synapse", "icue", "joytokey", "tinytask"]:
@@ -1682,14 +1688,16 @@ def check_recording_software():
         "Nvidia Share", "AMD ReLive", "GeForce Experience",
         "Streamlabs", "Loom", "Camtasia", "Screencast-O-Matic",
     ]
+    info("Scanning for recording software installations and processes...")
     found_any = False
     search_bases = [APPDATA, LOCALAPPDATA,
-                    os.environ.get("PROGRAMFILES", "C:\\Program Files"),
-                    os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")]
+                    os.environ.get("PROGRAMFILES","C:\\Program Files"),
+                    os.environ.get("PROGRAMFILES(X86)","C:\\Program Files (x86)")]
     for rec in recorders:
         for base in search_bases:
-            if os.path.exists(os.path.join(base, rec)):
-                found(f"{rec} → {os.path.join(base, rec)}")
+            path = os.path.join(base, rec)
+            if os.path.exists(path):
+                found(f"{rec} → {path}")
                 found_any = True
     all_procs = run("tasklist").lower()
     for r in ["obs", "bandicam", "fraps", "medal", "xsplit", "streamlabs", "camtasia", "loom"]:
@@ -1700,311 +1708,15 @@ def check_recording_software():
         info("No recording software detected.")
     pause()
 
-# ── Download History Check ────────────────────────────────────────────────────
-
-def check_download_history():
-    """
-    1. Copy browser Download SQLite DBs to temp (avoids browser file-lock).
-    2. Query them with the built-in sqlite3 module — no external deps needed.
-    3. If the table is empty or missing, flag it as CLEARED and show when.
-    4. Cross-reference five other Windows artifacts for download traces that
-       survive a browser history wipe: DNS cache, MUICache, BAM, Prefetch,
-       and the Windows Downloads folder on disk.
-    """
-    import sqlite3, shutil, tempfile
-
-    clear()
-    header("Download History — Cleared Detection & Recovery")
-
-    # ── Browser DB definitions ─────────────────────────────────────────────
-    # Each entry: (display name, db path, sql to fetch rows, sql to count rows)
-    CHROM_SQL_ROWS  = "SELECT target_path, tab_url, total_bytes, start_time FROM downloads ORDER BY start_time DESC LIMIT 200"
-    CHROM_SQL_COUNT = "SELECT COUNT(*) FROM downloads"
-    FF_SQL_ROWS     = "SELECT place_id, content, dateAdded FROM moz_annos WHERE anno_attribute_id=(SELECT id FROM moz_anno_attributes WHERE name='downloads/destinationFileURI') ORDER BY dateAdded DESC LIMIT 200"
-    FF_SQL_COUNT    = "SELECT COUNT(*) FROM moz_annos WHERE anno_attribute_id=(SELECT id FROM moz_anno_attributes WHERE name='downloads/destinationFileURI')"
-
-    browsers = {
-        "Chrome": {
-            "db":    os.path.join(LOCALAPPDATA, r"Google\Chrome\User Data\Default\History"),
-            "rows":  CHROM_SQL_ROWS,
-            "count": CHROM_SQL_COUNT,
-            "type":  "chromium",
-        },
-        "Edge": {
-            "db":    os.path.join(LOCALAPPDATA, r"Microsoft\Edge\User Data\Default\History"),
-            "rows":  CHROM_SQL_ROWS,
-            "count": CHROM_SQL_COUNT,
-            "type":  "chromium",
-        },
-        "Brave": {
-            "db":    os.path.join(LOCALAPPDATA, r"BraveSoftware\Brave-Browser\User Data\Default\History"),
-            "rows":  CHROM_SQL_ROWS,
-            "count": CHROM_SQL_COUNT,
-            "type":  "chromium",
-        },
-        "Opera": {
-            "db":    os.path.join(APPDATA, r"Opera Software\Opera Stable\History"),
-            "rows":  CHROM_SQL_ROWS,
-            "count": CHROM_SQL_COUNT,
-            "type":  "chromium",
-        },
-        "OperaGX": {
-            "db":    os.path.join(APPDATA, r"Opera Software\Opera GX Stable\History"),
-            "rows":  CHROM_SQL_ROWS,
-            "count": CHROM_SQL_COUNT,
-            "type":  "chromium",
-        },
-        "Vivaldi": {
-            "db":    os.path.join(LOCALAPPDATA, r"Vivaldi\User Data\Default\History"),
-            "rows":  CHROM_SQL_ROWS,
-            "count": CHROM_SQL_COUNT,
-            "type":  "chromium",
-        },
-    }
-
-    # Firefox: scan all profiles
-    ff_profiles_root = os.path.join(APPDATA, r"Mozilla\Firefox\Profiles")
-    if os.path.exists(ff_profiles_root):
-        for prof in os.listdir(ff_profiles_root):
-            db = os.path.join(ff_profiles_root, prof, "places.sqlite")
-            if os.path.exists(db):
-                browsers[f"Firefox ({prof[:20]})"] = {
-                    "db":    db,
-                    "rows":  FF_SQL_ROWS,
-                    "count": FF_SQL_COUNT,
-                    "type":  "firefox",
-                }
-
-    tmp_dir = tempfile.mkdtemp(prefix="sshelper_dl_")
-    any_browser_found = False
-
-    for browser, cfg in browsers.items():
-        db_path = cfg["db"]
-        if not os.path.exists(db_path):
-            continue
-
-        any_browser_found = True
-        print()
-        print(f"  {'─'*64}")
-        print(f"  Browser : {browser}")
-        print(f"  DB path : {db_path}")
-
-        # Copy DB + WAL/SHM so SQLite can open it even while browser runs
-        tmp_db = os.path.join(tmp_dir, f"{browser.replace(' ','_')}.db")
-        try:
-            shutil.copy2(db_path, tmp_db)
-            for ext in ["-wal", "-shm"]:
-                src = db_path + ext
-                if os.path.exists(src):
-                    shutil.copy2(src, tmp_db + ext)
-        except Exception as e:
-            warn(f"  Could not copy DB: {e}")
-            continue
-
-        try:
-            con = sqlite3.connect(tmp_db)
-            con.row_factory = sqlite3.Row
-
-            # ── Row count (cleared = 0 rows but DB exists) ──────────────
-            try:
-                count = con.execute(cfg["count"]).fetchone()[0]
-            except sqlite3.OperationalError:
-                count = None   # table missing entirely
-
-            if count is None:
-                warn(f"  Downloads table missing — DB may be wiped/recreated")
-            elif count == 0:
-                warn(f"  CLEARED — downloads table exists but is EMPTY (0 rows)")
-                warn(f"  History was cleared after the last download session.")
-            else:
-                info(f"  {count} download record(s) found:")
-
-                rows = con.execute(cfg["rows"]).fetchall()
-                for r in rows:
-                    if cfg["type"] == "chromium":
-                        # start_time is microseconds since 1601-01-01
-                        try:
-                            from datetime import timezone
-                            epoch_delta = 11644473600  # seconds between 1601 and 1970
-                            ts = datetime.fromtimestamp(
-                                r["start_time"] / 1_000_000 - epoch_delta,
-                                tz=timezone.utc
-                            ).strftime("%Y-%m-%d %H:%M:%S UTC")
-                        except:
-                            ts = "?"
-                        path = r["target_path"] or "(no path)"
-                        url  = r["tab_url"]     or "(no url)"
-                        size = r["total_bytes"] or 0
-                        print(f"    [{ts}]  {os.path.basename(path)}  ({size//1024} KB)")
-                        print(f"      URL : {url}")
-                        print(f"      Path: {path}")
-                    else:
-                        # Firefox: content is the local file URI
-                        content = r["content"] or ""
-                        try:
-                            from datetime import timezone
-                            ts = datetime.fromtimestamp(
-                                r["dateAdded"] / 1_000_000,
-                                tz=timezone.utc
-                            ).strftime("%Y-%m-%d %H:%M:%S UTC")
-                        except:
-                            ts = "?"
-                        print(f"    [{ts}]  {content}")
-
-            con.close()
-
-        except Exception as e:
-            warn(f"  SQLite error: {e}")
-
-        # ── Check DB metadata: last modified time of the DB file itself ──
-        try:
-            db_mtime = datetime.fromtimestamp(os.path.getmtime(db_path))
-            db_size  = os.path.getsize(db_path)
-            info(f"  DB last modified : {db_mtime.strftime('%Y-%m-%d %H:%M:%S')}")
-            info(f"  DB size          : {db_size} bytes")
-            if db_size < 40960 and count == 0:
-                warn(f"  DB is suspiciously small ({db_size}B) AND empty — likely wiped and rebuilt.")
-        except:
-            pass
-
-    # Clean up temp copies
-    try:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    except:
-        pass
-
-    if not any_browser_found:
-        info("No browser history databases found.")
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # FORENSIC CROSS-REFERENCE — traces that survive a history clear
-    # ═══════════════════════════════════════════════════════════════════════
-    print()
-    print(f"  {'═'*64}")
-    print("   FORENSIC TRACES — survive browser history clear")
-    print(f"  {'═'*64}")
-
-    # 1. Actual Downloads folder on disk
-    print()
-    info("[1/5] Files currently in Downloads folder:")
-    dl_folder = os.path.join(USERPROFILE, "Downloads")
-    if os.path.exists(dl_folder):
-        entries = []
-        for f in os.listdir(dl_folder):
-            full = os.path.join(dl_folder, f)
-            try:
-                mtime = datetime.fromtimestamp(os.path.getmtime(full))
-                size  = os.path.getsize(full) if os.path.isfile(full) else 0
-                entries.append((mtime, f, size))
-            except:
-                entries.append((datetime.min, f, 0))
-        entries.sort(reverse=True)
-        if entries:
-            for mtime, fname, size in entries[:40]:
-                ext = os.path.splitext(fname)[1].lower()
-                flag = " ◄ SUSPICIOUS" if ext in [".exe", ".jar", ".dll", ".bat",
-                                                   ".ps1", ".vbs", ".zip", ".rar"] else ""
-                print(f"    [{mtime.strftime('%Y-%m-%d %H:%M')}]  {fname}  ({size//1024} KB){flag}")
-        else:
-            warn("Downloads folder is EMPTY — may have been cleared before SS.")
-    else:
-        warn("Downloads folder not found.")
-
-    # 2. Windows DNS cache — reveals domains visited (including download CDNs)
-    print()
-    info("[2/5] DNS cache — download-related domains:")
-    dns_out = run("ipconfig /displaydns")
-    download_domains = []
-    current_record   = []
-    dl_keywords = [
-        "download", "cdn", "mediafire", "mega.nz", "gofile", "anonfiles",
-        "dropbox", "drive.google", "github", "githubusercontent", "discord",
-        "1fichier", "uploadhaven", "zippyshare", "workupload", "pixeldrain",
-        "cheat", "hack", "inject", "vape", "sigma", "flux",
-    ]
-    for line in dns_out.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("Record Name"):
-            current_record = [stripped]
-        elif current_record:
-            current_record.append(stripped)
-            if any(k in stripped.lower() for k in dl_keywords) or \
-               any(k in current_record[0].lower() for k in dl_keywords):
-                download_domains.extend(current_record)
-                download_domains.append("")
-                current_record = []
-    if download_domains:
-        for line in download_domains:
-            print(f"    {line}")
-    else:
-        info("No download-related domains in DNS cache (may be flushed).")
-
-    # 3. Prefetch — shows if a downloaded EXE was ever run
-    print()
-    info("[3/5] Prefetch — downloaded executables that were RUN:")
-    pf_out = run("dir C:\\Windows\\Prefetch /od /b *.pf")
-    dl_exec_keywords = [
-        "cheat", "inject", "hack", "vape", "sigma", "wurst", "meteor",
-        "anydesk", "teamviewer", "luyten", "recaf", "jd-gui",
-        "setup", "install", "loader", "injector", "rat", "ghost",
-        "flux", "reflex", "tenacity", "prestige",
-    ]
-    pf_hits = [l for l in pf_out.splitlines()
-               if any(k in l.lower() for k in dl_exec_keywords)]
-    if pf_hits:
-        for h in pf_hits:
-            found(f"  {h}")
-    else:
-        info("No suspicious downloaded executables found in Prefetch.")
-
-    # 4. MUICache — display names of run programs (survives uninstall + history clear)
-    print()
-    info("[4/5] MUICache — programs run that match download/cheat keywords:")
-    mui_out = run(r'reg query "HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"')
-    mui_dl_keys = [
-        "cheat", "inject", "hack", "vape", "sigma", "wurst", "anydesk",
-        "teamviewer", "luyten", "recaf", "loader", "injector", "rat",
-        "flux", "reflex", "tenacity", "download", "setup", "install",
-    ]
-    mui_hits = [l.strip() for l in mui_out.splitlines()
-                if any(k in l.lower() for k in mui_dl_keys)]
-    if mui_hits:
-        for h in mui_hits:
-            found(f"  {h}")
-    else:
-        info("No suspicious MUICache entries.")
-
-    # 5. BAM — background activity monitor, records EXE execution with timestamp
-    print()
-    info("[5/5] BAM — recently executed files matching download/cheat keywords:")
-    bam_out = run(r'reg query "HKLM\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings" /s')
-    bam_dl_keys = [
-        "cheat", "inject", "hack", "vape", "sigma", "wurst", "anydesk",
-        "teamviewer", "luyten", "recaf", "loader", "injector",
-        "flux", "reflex", "tenacity", "downloads", "rat", "ghost",
-    ]
-    bam_hits = [l.strip() for l in bam_out.splitlines()
-                if r"\device\harddiskvolume" in l.lower()
-                and any(k in l.lower() for k in bam_dl_keys)]
-    if bam_hits:
-        for h in bam_hits:
-            found(f"  {h}")
-    else:
-        info("No suspicious BAM entries.")
-
-    print()
-    info("Tip: even with history cleared, Prefetch + BAM + MUICache show what was RUN.")
-    info("     DNS cache shows what sites were visited. Downloads folder shows what remains.")
-    pause()
-
-
-# ── Menu ──────────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def open_path_safe(path):
     if os.path.exists(path):
         os.startfile(path)
     else:
         warn(f"Path not found: {path}")
+
+# ── Main Menu ─────────────────────────────────────────────────────────────────
 
 def menu():
     while True:
@@ -2016,15 +1728,15 @@ def menu():
         """)
 
         print("  ── AUTOMATIC CHECKS ─────────────────────────────────────────────")
-        print("  [1]  AppData cheat folders      [2]  Running processes")
-        print("  [3]  .minecraft folder           [4]  Startup programs")
-        print("  [5]  Recently opened files       [6]  Temp folder")
-        print("  [7]  Hosts file                  [8]  Installed programs")
-        print("  [9]  Browser history paths       [10] Windows Prefetch")
-        print("  [11] Scheduled tasks             [12] Environment variables")
-        print("  [13] VPN / virtual adapters      [14] Shadow copies")
-        print("  [15] Files modified in last 24h  [16] Active network connections")
-        print("  [17] Installed drivers           [18] Full auto scan (all checks)")
+        print("  [1]  AppData cheat client folders  [2]  Running processes")
+        print("  [3]  .minecraft folder              [4]  Startup programs")
+        print("  [5]  Recently opened files          [6]  Temp folder")
+        print("  [7]  Hosts file                     [8]  Installed programs")
+        print("  [9]  Browser history paths          [10] Windows Prefetch")
+        print("  [11] Scheduled tasks                [12] Environment variables")
+        print("  [13] VPN / virtual adapters         [14] Shadow copies")
+        print("  [15] Files modified in last 24h     [16] Active network connections")
+        print("  [17] Installed drivers              [18] Full auto scan (all checks)")
         print("  [O]  Ocean Anti-Cheat PIN lookup")
         print("  [R]  Save full scan report to Desktop")
         print("  [K]  Launcher/Profile Scanner")
@@ -2032,15 +1744,9 @@ def menu():
         print("  [S]  Suspicious Cheat Folders")
         print("  [L]  Launcher / Mods Reader")
         print()
-        print("  ── NEW CHECKS ───────────────────────────────────────────────────")
-        print("  [N]  Remote Access Tools         [P]  BAM Executed Programs")
-        print("  [Q]  ShellBags Explorer History  [T]  MUICache Programs Run")
-        print("  [U]  PowerShell History          [V]  Clipboard Artifacts")
-        print("  [W]  JAR Decompiler Detection    [X]  Ghost Client Artifacts")
-        print("  [Y]  Discord Inject Check        [Z]  Enhanced Autorun Check")
-        print("  [AA] UserAssist (GUI Programs)   [AB] TypedPaths (Explorer bar)")
-        print("  [AC] RunMRU (Win+R history)      [AD] Recycle Bin Contents")
-        print("  [AE] Event Log Cleared Check")
+        print("  ── BROWSER FORENSICS ────────────────────────────────────────────")
+        print("  [BF] Browser Forensics Menu")
+        print("       History · Downloads · Wipe Detection · Cookie Domains")
         print()
         print("  ── CHICHO SS HELPER SECTIONS ────────────────────────────────────")
         print("  [A]  Manual Tools     (NirSoft / forensic download & launch)")
@@ -2058,7 +1764,7 @@ def menu():
         print("  [19] Task Manager      [20] Registry Editor   [21] AppData folder")
         print("  [22] .minecraft folder [23] Temp folder       [24] Startup folder")
         print("  [25] Recent files      [26] Program Files     [27] Hosts in Notepad")
-        print("  [28] Event Viewer      [29] Resource Monitor  [30] System Info")
+        print("  [28] Event Viewer      [29] Resource Monitor  [30] System Info (msinfo32)")
         print("  [31] Services          [32] Device Manager    [33] Network Connections")
         print("  [34] Autoruns          [35] Dump processes    [36] Dump startup")
         print("  [37] Dump network      [38] Search for a file [39] Search registry")
@@ -2094,22 +1800,8 @@ def menu():
             "M":  check_java_arguments,
             "S":  check_suspicious_folders,
             "L":  scan_launcher_mods,
-            # New checks
-            "N":  check_remote_access,
-            "P":  check_bam,
-            "Q":  check_shellbags,
-            "T":  check_muicache,
-            "U":  check_ps_history,
-            "V":  check_clipboard,
-            "W":  check_decompilers,
-            "X":  check_ghost_artifacts,
-            "Y":  check_discord,
-            "Z":  check_autorun_enhanced,
-            "AA": check_userassist,
-            "AB": check_typed_paths,
-            "AC": check_run_mru,
-            "AD": check_deleted_recently,
-            "AE": check_event_log_cleared,
+            # Browser forensics
+            "BF": menu_browser_forensics,
             # Chicho sections
             "A":  menu_manual_tools,
             "B":  menu_recovery_tools,
